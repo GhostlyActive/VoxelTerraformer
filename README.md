@@ -24,3 +24,11 @@ The goal of VoxelTerraformer is not to be a full game, but a flexible sandbox an
 - **Mouse** – Look around
 - **Left Mouse Button** or **O** – Remove block
 - **Right Mouse Button** or **P** – Place block
+
+---
+
+## Screenshots
+
+![Image1](Screenshots/Image1.png)
+![Image2](Screenshots/Image2.png)
+
