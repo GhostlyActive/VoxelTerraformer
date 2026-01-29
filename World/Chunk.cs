@@ -86,7 +86,6 @@ public class Chunk
         const float detailAmp = 5f;
 
         const int baseHeight = 1;             // “Meeresspiegel / Grund”
-        const int seaLevel = 1;              // nur als Orientierung, optional
 
         for (int x = 0; x < Size; x++)
             for (int z = 0; z < Size; z++)
@@ -175,38 +174,58 @@ public class Chunk
 
     private static Color HeightColor(int y, float brightness)
     {
-        // ✅ HIER stellst du die Höhen ein (in Block-Y):
-        const int blueToBrownEndY = 16;     // z.B. bis Y=10 blau->braun
-        const int brownToGreenStartY = 17;  // z.B. ab Y=30 braun->grün
-        const int greenFullY = 30;          // z.B. ab Y=45 komplett grün
+        // ✅ Höhen-Grenzen (in Block-Y) — HIER stellst du es ein:
+        const int deepBlueEndY = 8;      // 0..6 dunkelblau
+        const int greenEndY = 15;     // 7..18 grün
+        const int brownEndY = 24;     // 19..28 braun
+                                      // ab 29 -> weiß
 
-        // Basisfarben
-        float br = 40, bg = 80, bb = 200; // Blau
-        float mr = 140, mg = 95, mb = 50;  // Braun
-        float tr = 60, tg = 190, tb = 70;  // Grün
+        // Farben (Basis)
+        // unten: dunkelblau
+        float dr = 10, dg = 25, db = 80;
+
+        // grün
+        float gr = 60, gg = 190, gb = 70;
+
+        // braun
+        float br = 140, bg = 95, bb = 50;
+
+        // weiß (Schnee)
+        float wr = 235, wg = 235, wb = 235;
 
         float r, g, b;
 
-        if (y <= blueToBrownEndY)
+        if (y <= deepBlueEndY)
         {
-            // Blau -> Braun von Y=0 bis blueToBrownEndY
-            float t = InverseLerp(0, blueToBrownEndY, y);
-            r = Lerp(br, mr, t);
-            g = Lerp(bg, mg, t);
-            b = Lerp(bb, mb, t);
+            // Optional: leicht von sehr dunkel zu weniger dunkel innerhalb der Zone
+            float t = InverseLerp(0, deepBlueEndY, y);
+            r = Lerp(dr, dr + 15, t);
+            g = Lerp(dg, dg + 20, t);
+            b = Lerp(db, db + 40, t);
         }
-        else if (y < brownToGreenStartY)
+        else if (y <= greenEndY)
         {
-            // Dazwischen: BRAUN (Plateau)
-            r = mr; g = mg; b = mb;
+            // Übergang dunkelblau -> grün (weich)
+            float t = InverseLerp(deepBlueEndY, greenEndY, y);
+            r = Lerp(dr, gr, t);
+            g = Lerp(dg, gg, t);
+            b = Lerp(db, gb, t);
+        }
+        else if (y <= brownEndY)
+        {
+            // Übergang grün -> braun (weich)
+            float t = InverseLerp(greenEndY, brownEndY, y);
+            r = Lerp(gr, br, t);
+            g = Lerp(gg, bg, t);
+            b = Lerp(gb, bb, t);
         }
         else
         {
-            // Braun -> Grün von brownToGreenStartY bis greenFullY
-            float t = InverseLerp(brownToGreenStartY, greenFullY, y);
-            r = Lerp(mr, tr, t);
-            g = Lerp(mg, tg, t);
-            b = Lerp(mb, tb, t);
+            // Übergang braun -> weiß (weich, damit Schnee nicht wie Cut aussieht)
+            float t = InverseLerp(brownEndY, brownEndY + 10, y); // +10 = Schneebandbreite
+            r = Lerp(br, wr, t);
+            g = Lerp(bg, wg, t);
+            b = Lerp(bb, wb, t);
         }
 
         // Licht anwenden
@@ -216,6 +235,7 @@ public class Chunk
 
         return new Color { R = (byte)r, G = (byte)g, B = (byte)b, A = 255 };
     }
+
 
 
     // -------------------------------------------------

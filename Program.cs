@@ -16,46 +16,55 @@ public static class Program
         Raylib.SetTargetFPS(60);
         Raylib.DisableCursor();
 
-        Camera3D camera = new Camera3D
-        {
-            Position = new Vector3(18, 16, 18),
-            Target = new Vector3(8, 4, 8),
-            Up = Vector3.UnitY,
-            FovY = 60f,
-            Projection = CameraProjection.Perspective
-        };
-
         VoxelWorld world = new VoxelWorld();
-        float sunTimer = 0.0f;
+
+        // Spieler starten lassen (ein bisschen über Boden)
+        PlayerController player = new PlayerController(new Vector3(10, 30, 8));
+
+        // Day/Night
+        DayNightCycle dayNight = new DayNightCycle
+        {
+            Center = new Vector3(8, 8, 8),
+            DayLengthSeconds = 240f,
+            OrbitRadius = 60f,
+            DrawSunAndMoon = true
+        };
 
         while (!Raylib.WindowShouldClose())
         {
             float dt = Raylib.GetFrameTime();
-            Raylib.UpdateCamera(ref camera, CameraMode.Free);
 
-            sunTimer += dt * 0.35f;
-            Vector3 sunPos = new Vector3(
-                MathF.Cos(sunTimer) * 30 + 8,
-                MathF.Sin(sunTimer) * 20 + 18,
-                MathF.Sin(sunTimer * 0.5f) * 30 + 8
-            );
+            // Player bewegt sich + liefert Kamera
+            Camera3D camera = player.Update(world, dt);
 
+            // Day/Night Update (Speed: Z/U)
+            dayNight.Update(dt);
+
+            // Welt-Interaktion
             world.Update(camera);
 
             Raylib.BeginDrawing();
 
-            Raylib.ClearBackground(Color.SkyBlue);
+            // ✅ Himmel als Background (keine Overlays, keine Glitches)
+            Raylib.ClearBackground(dayNight.SkyColor);
 
             Raylib.BeginMode3D(camera);
 
             GridRenderer.DrawFromOrigin(64, 1.0f);
-            world.Draw(sunPos);
+
+            // Welt nutzt weiterhin Sonnenposition (dein Chunk nutzt sunPos.Y -> brightness)
+            world.Draw(dayNight.SunPosition);
+
+            // Sonne/Mond
+            dayNight.Draw3D(camera);
 
             Raylib.EndMode3D();
 
             // UI
             Raylib.DrawFPS(10, 10);
-            Raylib.DrawText("LMB/O: remove | RMB/P: place", 10, 40, 20, Color.Black);
+            Raylib.DrawText("WASD move | Space jump | LMB remove | RMB place", 10, 40, 20, Color.Black);
+            Raylib.DrawText("Z slower day | U faster day", 10, 65, 20, Color.Black);
+            Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
             // Crosshair
             int cx = Raylib.GetScreenWidth() / 2;
