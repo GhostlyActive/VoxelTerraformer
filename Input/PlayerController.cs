@@ -23,7 +23,19 @@ public class PlayerController
     private const float JumpSpeed = 10.2f;
     private const float Gravity = 18.0f;
 
+    // Sprung-Feel: kurz nach Kantenabgang darf noch gesprungen werden (Coyote),
+    // und ein knapp zu früher Druck wird bis zur Landung gepuffert
+    private const float CoyoteTime = 0.12f;
+    private const float JumpBufferTime = 0.15f;
+
     private bool _grounded;
+    private float _timeSinceGrounded = 999f;
+    private float _timeSinceJumpPressed = 999f;
+
+    public bool IsGrounded => _grounded;
+
+    /// <summary>True, wenn in diesem Frame ein Sprung ausgelöst wurde (der Space-Druck ist damit verbraucht)</summary>
+    public bool JumpedThisFrame { get; private set; }
 
     public BoundingBox Bounds => new(
         new Vector3(Position.X - HalfWidth, Position.Y, Position.Z - HalfWidth),
@@ -60,11 +72,23 @@ public class PlayerController
         _velocity.X = move.X;
         _velocity.Z = move.Z;
 
-        // Jump
-        if (_grounded && Raylib.IsKeyPressed(KeyboardKey.Space))
+        // Jump (mit Coyote-Time und Jump-Buffer)
+        JumpedThisFrame = false;
+
+        _timeSinceJumpPressed += dt;
+        if (Raylib.IsKeyPressed(KeyboardKey.Space)) _timeSinceJumpPressed = 0f;
+
+        if (_grounded) _timeSinceGrounded = 0f;
+        else _timeSinceGrounded += dt;
+
+        bool canJump = _grounded || _timeSinceGrounded < CoyoteTime;
+        if (canJump && _timeSinceJumpPressed < JumpBufferTime)
         {
             _velocity.Y = JumpSpeed;
             _grounded = false;
+            _timeSinceGrounded = CoyoteTime;     // Coyote verbraucht — kein zweiter Sprung aus der Luft
+            _timeSinceJumpPressed = JumpBufferTime; // Buffer verbraucht
+            JumpedThisFrame = true;
         }
 
         // Gravity
