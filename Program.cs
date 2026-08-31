@@ -111,8 +111,8 @@ public static class Program
 
             // UI
             Raylib.DrawFPS(10, 10);
-            Raylib.DrawText("WASD move | Space jump | Space in air: platform | LMB remove | RMB place", 10, 40, 20, Color.Black);
-            Raylib.DrawText("Z slower day | U faster day | F3 debug", 10, 65, 20, Color.Black);
+            Raylib.DrawText("WASD move | Shift sprint | Space jump | Space in air: platform", 10, 40, 20, Color.Black);
+            Raylib.DrawText("LMB remove | RMB place | Z/U day speed | F3 debug", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
             if (debugOverlay)

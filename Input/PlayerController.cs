@@ -20,8 +20,14 @@ public class PlayerController
 
     // Movement tuning
     private const float MoveSpeed = 7.0f;
+    private const float SprintMultiplier = 1.6f;
     private const float JumpSpeed = 10.2f;
     private const float Gravity = 18.0f;
+
+    // FOV zieht beim Sprinten leicht auf — verkauft das Tempo spürbar
+    private const float BaseFov = 60f;
+    private const float SprintFov = 66f;
+    private float _fov = BaseFov;
 
     // Sprung-Feel: kurz nach Kantenabgang darf noch gesprungen werden (Coyote),
     // und ein knapp zu früher Druck wird bis zur Landung gepuffert
@@ -66,7 +72,9 @@ public class PlayerController
         Vector3 forward = ForwardOnXZ();
         Vector3 right = Vector3.Normalize(Vector3.Cross(forward, Vector3.UnitY));
 
-        Vector3 move = (right * wish.X + forward * wish.Z) * MoveSpeed;
+        bool sprinting = Raylib.IsKeyDown(KeyboardKey.LeftShift) && wish.LengthSquared() > 0f;
+        float speed = MoveSpeed * (sprinting ? SprintMultiplier : 1f);
+        Vector3 move = (right * wish.X + forward * wish.Z) * speed;
 
         // Apply horizontal velocity (simple “arcade”)
         _velocity.X = move.X;
@@ -99,6 +107,9 @@ public class PlayerController
         MoveAndCollide(world, dt);
 
         // Build camera from player
+        float targetFov = sprinting ? SprintFov : BaseFov;
+        _fov += (targetFov - _fov) * Math.Min(1f, 10f * dt);
+
         Vector3 eye = Position + new Vector3(0, EyeHeight, 0);
         Vector3 dir = LookDirection();
         Camera3D cam = new Camera3D
@@ -106,7 +117,7 @@ public class PlayerController
             Position = eye,
             Target = eye + dir,
             Up = Vector3.UnitY,
-            FovY = 60f,
+            FovY = _fov,
             Projection = CameraProjection.Perspective
         };
         return cam;
