@@ -96,7 +96,7 @@ public static class Program
 
             Raylib.BeginMode3D(camera);
 
-            terrainShader.SetFrame(dayNight.SunDirection, dayNight.SunlightColor, dayNight.AmbientColor);
+            terrainShader.SetFrame(dayNight, camera.Position);
 
             Frustum frustum = Frustum.FromCamera(
                 camera, Raylib.GetScreenWidth() / (float)Raylib.GetScreenHeight());
