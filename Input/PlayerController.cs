@@ -25,6 +25,10 @@ public class PlayerController
 
     private bool _grounded;
 
+    public BoundingBox Bounds => new(
+        new Vector3(Position.X - HalfWidth, Position.Y, Position.Z - HalfWidth),
+        new Vector3(Position.X + HalfWidth, Position.Y + Height, Position.Z + HalfWidth));
+
     public PlayerController(Vector3 startPos)
     {
         Position = startPos;
@@ -167,7 +171,7 @@ public class PlayerController
         for (int y = iy0; y <= iy1; y++)
         for (int z = iz0; z <= iz1; z++)
         {
-            if (world.GetBlock(x, y, z) == 0) continue;
+            if (!BlockRegistry.IsSolid(world.GetBlock(x, y, z))) continue;
 
             // Block AABB: [x,x+1] etc.
             float bMinX = x, bMaxX = x + 1f;
