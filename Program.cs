@@ -59,6 +59,7 @@ public static class Program
         DebugMenu debugMenu = new DebugMenu(settings);
 
         StarField stars = new StarField();
+        CloudLayer clouds = new CloudLayer();
 
         int smokeFrames = 0;
         bool debugOverlay = smokeTest; // im Testlauf direkt an, damit die Stats auf dem Screenshot stehen
@@ -115,6 +116,7 @@ public static class Program
             particles.Draw();
             dayNight.Draw3D(camera);
             stars.Draw(camera, 1f - dayNight.Daylight01, elapsedTime);
+            clouds.Draw(elapsedTime, dayNight.Daylight01);
 
             if (debugOverlay)
             {
