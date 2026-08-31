@@ -30,9 +30,21 @@ public class DayNightCycle
     /// <summary>Background-Farbe für ClearBackground()</summary>
     public Color SkyColor { get; private set; }
 
+    /// <summary>Normiert, zeigt von der Sonne in die Welt (für den Terrain-Shader)</summary>
+    public Vector3 SunDirection { get; private set; } = new(0, -1, 0);
+
+    /// <summary>Direktes Sonnenlicht (0..1 pro Kanal), in der Dämmerung warm, nachts aus</summary>
+    public Vector3 SunlightColor { get; private set; }
+
+    /// <summary>Grundhelligkeit (0..1 pro Kanal), nachts bläulich</summary>
+    public Vector3 AmbientColor { get; private set; }
+
     public string SpeedLabel => $"TimeScale: {TimeScale:0.00}x";
 
     private float _timeSeconds;
+
+    /// <summary>Tageszeit vorspulen (z. B. für Tests oder einen definierten Spielstart)</summary>
+    public void AdvanceTime(float seconds) => _timeSeconds += seconds;
 
     public void Update(float dt)
     {
@@ -76,6 +88,21 @@ public class DayNightCycle
         Color duskTint = new Color { R = 255, G = 150, B = 80, A = 255 };
 
         SkyColor = LerpColor(baseSky, duskTint, dusk * 0.25f);
+
+        // Licht fürs Terrain (Shader): mittags neutral-warm, in der Dämmerung orange, nachts nur Ambient
+        SunDirection = Vector3.Normalize(Center - SunPosition);
+
+        // Wärme des Lichts am echten Sonnenstand festmachen (tief = orange), nicht am Daylight-Wert
+        float sunElevation = MathF.Max(0f, -SunDirection.Y);
+        float lowSun = 1f - SmoothStep(0.08f, 0.50f, sunElevation);
+
+        Vector3 noonColor = new(1.00f, 0.97f, 0.90f);
+        Vector3 duskColor = new(1.00f, 0.55f, 0.25f);
+        SunlightColor = Vector3.Lerp(noonColor, duskColor, lowSun * 0.85f) * (0.75f * Daylight01);
+
+        Vector3 nightAmbient = new(0.20f, 0.22f, 0.32f);
+        Vector3 dayAmbient = new(0.42f, 0.44f, 0.47f);
+        AmbientColor = Vector3.Lerp(nightAmbient, dayAmbient, Daylight01);
     }
 
     /// <summary>In BeginMode3D() aufrufen</summary>
@@ -89,12 +116,13 @@ public class DayNightCycle
         Color sunColor = new Color { R = 255, G = 245, B = 200, A = 255 };
         Color moonColor = new Color { R = 180, G = 190, B = 210, A = 255 };
 
-        // Sonne/Mond zeichnen (rein optisch)
-        Raylib.DrawSphere(SunPosition, 2.0f, sunColor);
+        // Sonne/Mond zeichnen (rein optisch) — Größe skaliert mit dem Orbit-Radius
+        float sunRadius = OrbitRadius * 0.035f;
+        Raylib.DrawSphere(SunPosition, sunRadius, sunColor);
 
         // Mond nachts etwas “heller”: (Raylib Color hat kein Multiplizieren, also leicht anders)
         byte m = (byte)Math.Clamp(160 + (int)(80 * night01), 0, 255);
-        Raylib.DrawSphere(MoonPosition, 1.6f, new Color { R = m, G = m, B = (byte)(m + 10 > 255 ? 255 : m + 10), A = 255 });
+        Raylib.DrawSphere(MoonPosition, sunRadius * 0.8f, new Color { R = m, G = m, B = (byte)(m + 10 > 255 ? 255 : m + 10), A = 255 });
     }
 
     private static float SmoothStep(float a, float b, float t)

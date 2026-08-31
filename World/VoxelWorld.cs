@@ -1,13 +1,15 @@
 using Raylib_cs;
 using System.Numerics;
-using System.Collections.Generic;
 using Terraformer.MathTools;
+using Terraformer.Rendering;
 
 namespace Terraformer.World;
 
 public class VoxelWorld
 {
     public const int WorldHeight = 64;
+    public const int StartChunksX = 8;
+    public const int StartChunksZ = 8;
 
     private readonly Dictionary<ChunkCoord, Chunk> _chunks = new();
 
@@ -15,15 +17,28 @@ public class VoxelWorld
     private bool _hasHover;
     private Vector3 _hoverCenter;
 
+    /// <summary>Chunk braucht ein neues Mesh (feuert bei Kanten-Edits auch für Nachbarn)</summary>
+    public event Action<ChunkCoord>? ChunkDirty;
+
+    /// <summary>Block abgebaut: Zentrum + Albedo (z. B. für Partikel)</summary>
+    public event Action<Vector3, Color>? BlockBroken;
+
+    /// <summary>Block gesetzt: Zentrum + Albedo</summary>
+    public event Action<Vector3, Color>? BlockPlaced;
+
+    public IEnumerable<Chunk> Chunks => _chunks.Values;
+
     public VoxelWorld()
     {
-        // Create a small start area (2x2 chunks).
-        for (int cz = 0; cz < 2; cz++)
-        for (int cx = 0; cx < 2; cx++)
+        for (int cz = 0; cz < StartChunksZ; cz++)
+        for (int cx = 0; cx < StartChunksX; cx++)
             GetOrCreateChunk(new ChunkCoord(cx, cz));
     }
 
-    public void Update(Camera3D camera)
+    public bool TryGetChunk(ChunkCoord coord, out Chunk chunk)
+        => _chunks.TryGetValue(coord, out chunk!);
+
+    public void Update(Camera3D camera, BoundingBox playerBounds)
     {
         // Inputs: Mouse + keyboard fallback
         bool remove = Raylib.IsMouseButtonPressed(MouseButton.Left) || Raylib.IsKeyPressed(KeyboardKey.O);
@@ -33,19 +48,13 @@ public class VoxelWorld
         UpdateHover(camera);
 
         if (remove) TryRemove(camera);
-        if (place)  TryPlace(camera);
+        if (place)  TryPlace(camera, playerBounds);
     }
 
-    public void Draw(Vector3 sunPos)
+    public void DrawHover()
     {
-        foreach (var chunk in _chunks.Values)
-            chunk.Draw(sunPos, WorldHeight, GetBlock);
-
-        // Optional: draw block highlight at the aimed block
         if (_hasHover)
-        {
             Raylib.DrawCubeWires(_hoverCenter, 1.02f, 1.02f, 1.02f, Color.Yellow);
-        }
     }
 
     // --- Interaction ---
@@ -54,12 +63,10 @@ public class VoxelWorld
     {
         _hasHover = false;
 
-
         Ray ray = Raylib.GetScreenToWorldRay(
             new Vector2(Raylib.GetScreenWidth() / 2, Raylib.GetScreenHeight() / 2),
             camera
         );
-        
 
         var hit = VoxelRaycast.Cast(GetBlock, ray.Position, ray.Direction, 60f);
         if (!hit.HasHit) return;
@@ -78,10 +85,17 @@ public class VoxelWorld
         var hit = VoxelRaycast.Cast(GetBlock, ray.Position, ray.Direction, 60f);
         if (!hit.HasHit) return;
 
-        SetBlock(hit.Block.X, hit.Block.Y, hit.Block.Z, 0);
+        int id = GetBlock(hit.Block.X, hit.Block.Y, hit.Block.Z);
+        Color albedo = TerrainColors.ForBlock(id, hit.Block.X, hit.Block.Y, hit.Block.Z);
+
+        SetBlock(hit.Block.X, hit.Block.Y, hit.Block.Z, BlockRegistry.Air);
+
+        BlockBroken?.Invoke(
+            new Vector3(hit.Block.X + 0.5f, hit.Block.Y + 0.5f, hit.Block.Z + 0.5f),
+            albedo);
     }
 
-    private void TryPlace(Camera3D camera)
+    private void TryPlace(Camera3D camera, BoundingBox playerBounds)
     {
         Ray ray = Raylib.GetScreenToWorldRay(
             new Vector2(Raylib.GetScreenWidth() / 2, Raylib.GetScreenHeight() / 2),
@@ -97,8 +111,19 @@ public class VoxelWorld
         int pz = hit.PlaceBlock.Z;
 
         if (GetBlock(px, py, pz) != 0) return; // must be air
-        SetBlock(px, py, pz, 1);
+        if (IntersectsBlock(playerBounds, px, py, pz)) return; // nicht in den Spieler hinein bauen
+
+        SetBlock(px, py, pz, BlockRegistry.Stone);
+
+        BlockPlaced?.Invoke(
+            new Vector3(px + 0.5f, py + 0.5f, pz + 0.5f),
+            TerrainColors.ForBlock(BlockRegistry.Stone, px, py, pz));
     }
+
+    private static bool IntersectsBlock(BoundingBox box, int x, int y, int z)
+        => box.Min.X < x + 1 && box.Max.X > x &&
+           box.Min.Y < y + 1 && box.Max.Y > y &&
+           box.Min.Z < z + 1 && box.Max.Z > z;
 
     // --- World-level block access ---
 
@@ -121,17 +146,27 @@ public class VoxelWorld
 
         chunk.SetLocal(lx, wy, lz, id, WorldHeight);
 
-        // Neighbor chunks may need rebuild when editing on borders.
-        if (lx == 0) MarkDirty(new ChunkCoord(cc.X - 1, cc.Z));
-        if (lx == Chunk.Size - 1) MarkDirty(new ChunkCoord(cc.X + 1, cc.Z));
-        if (lz == 0) MarkDirty(new ChunkCoord(cc.X, cc.Z - 1));
-        if (lz == Chunk.Size - 1) MarkDirty(new ChunkCoord(cc.X, cc.Z + 1));
+        FireDirtyAround(cc, lx, lz);
     }
 
-    private void MarkDirty(ChunkCoord cc)
+    // Edits an Kanten/Ecken betreffen auch die Meshes der (diagonalen) Nachbarn — wegen Face-Culling und AO
+    private void FireDirtyAround(ChunkCoord cc, int lx, int lz)
     {
-        if (_chunks.TryGetValue(cc, out var chunk))
-            chunk.MarkDirty();
+        ChunkDirty?.Invoke(cc);
+
+        bool west = lx == 0;
+        bool east = lx == Chunk.Size - 1;
+        bool north = lz == 0;
+        bool south = lz == Chunk.Size - 1;
+
+        if (west) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z));
+        if (east) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z));
+        if (north) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z - 1));
+        if (south) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z + 1));
+        if (west && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z - 1));
+        if (west && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z + 1));
+        if (east && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z - 1));
+        if (east && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z + 1));
     }
 
     private Chunk GetOrCreateChunk(ChunkCoord cc)

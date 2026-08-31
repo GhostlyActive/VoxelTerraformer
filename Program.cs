@@ -1,4 +1,4 @@
-﻿using Raylib_cs;
+using Raylib_cs;
 using System.Numerics;
 using Terraformer.Rendering;
 using Terraformer.World;
@@ -7,28 +7,46 @@ namespace Terraformer;
 
 public static class Program
 {
-    public static void Main()
+    public static void Main(string[] args)
     {
         const int screenWidth = 1280;
         const int screenHeight = 720;
 
+        // Mini-Testmodus: rendert ein paar Sekunden, legt einen Screenshot ab und beendet sich
+        bool smokeTest = Array.Exists(args, argument => argument == "--smoke");
+
         Raylib.InitWindow(screenWidth, screenHeight, "Terraformer");
         Raylib.SetTargetFPS(60);
-        Raylib.DisableCursor();
+        if (!smokeTest) Raylib.DisableCursor();
 
         VoxelWorld world = new VoxelWorld();
 
-        // Spieler starten lassen (ein bisschen über Boden)
-        PlayerController player = new PlayerController(new Vector3(10, 30, 8));
+        Vector3 worldCenter = new(
+            VoxelWorld.StartChunksX * Chunk.Size / 2f, 0,
+            VoxelWorld.StartChunksZ * Chunk.Size / 2f);
 
-        // Day/Night
+        // Spieler mittig in der Startwelt spawnen (etwas über dem Terrain);
+        // im Testlauf stattdessen mit Blick quer über die Welt
+        PlayerController player = smokeTest
+            ? new PlayerController(new Vector3(40, 58, 220))
+            : new PlayerController(worldCenter + new Vector3(0, 60, 0));
+
         DayNightCycle dayNight = new DayNightCycle
         {
-            Center = new Vector3(8, 8, 8),
+            Center = worldCenter,
             DayLengthSeconds = 240f,
-            OrbitRadius = 60f,
+            OrbitRadius = 300f,
             DrawSunAndMoon = true
         };
+
+        // Testlauf zur Mittagszeit, damit auf dem Screenshot etwas zu erkennen ist
+        if (smokeTest) dayNight.AdvanceTime(60f);
+
+        TerrainShader terrainShader = new TerrainShader();
+        ChunkMeshManager meshManager = new ChunkMeshManager(world);
+        meshManager.BuildAllNow();
+
+        int smokeFrames = 0;
 
         while (!Raylib.WindowShouldClose())
         {
@@ -41,21 +59,23 @@ public static class Program
             dayNight.Update(dt);
 
             // Welt-Interaktion
-            world.Update(camera);
+            world.Update(camera, player.Bounds);
+
+            // Geänderte Chunks meshen (Worker-Thread) bzw. fertige Meshes hochladen
+            meshManager.Update();
 
             Raylib.BeginDrawing();
-
-            // ✅ Himmel als Background (keine Overlays, keine Glitches)
             Raylib.ClearBackground(dayNight.SkyColor);
 
             Raylib.BeginMode3D(camera);
 
-            GridRenderer.DrawFromOrigin(64, 1.0f);
+            terrainShader.SetFrame(dayNight.SunDirection, dayNight.SunlightColor, dayNight.AmbientColor);
 
-            // Welt nutzt weiterhin Sonnenposition (dein Chunk nutzt sunPos.Y -> brightness)
-            world.Draw(dayNight.SunPosition);
+            Frustum frustum = Frustum.FromCamera(
+                camera, Raylib.GetScreenWidth() / (float)Raylib.GetScreenHeight());
+            meshManager.Draw(terrainShader.Material, frustum);
 
-            // Sonne/Mond
+            world.DrawHover();
             dayNight.Draw3D(camera);
 
             Raylib.EndMode3D();
@@ -72,8 +92,16 @@ public static class Program
             Raylib.DrawCircle(cx, cy, 4, Color.Black);
 
             Raylib.EndDrawing();
+
+            if (smokeTest && ++smokeFrames >= 150)
+            {
+                Raylib.TakeScreenshot("smoke.png");
+                break;
+            }
         }
 
+        meshManager.Dispose();
+        terrainShader.Unload();
         Raylib.CloseWindow();
     }
 }
