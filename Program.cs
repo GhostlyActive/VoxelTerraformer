@@ -1,5 +1,6 @@
 using Raylib_cs;
 using System.Numerics;
+using Terraformer.Effects;
 using Terraformer.Rendering;
 using Terraformer.World;
 
@@ -46,6 +47,10 @@ public static class Program
         ChunkMeshManager meshManager = new ChunkMeshManager(world);
         meshManager.BuildAllNow();
 
+        ParticleSystem particles = new ParticleSystem();
+        world.BlockBroken += particles.SpawnBlockBreak;
+        world.BlockPlaced += particles.SpawnBlockPlace;
+
         int smokeFrames = 0;
 
         while (!Raylib.WindowShouldClose())
@@ -64,6 +69,11 @@ public static class Program
             // Geänderte Chunks meshen (Worker-Thread) bzw. fertige Meshes hochladen
             meshManager.Update();
 
+            // Partikel laufen über den unbeleuchteten Default-Shader → Weltlicht beim Spawn einbacken
+            Vector3 light = dayNight.AmbientColor + dayNight.SunlightColor * 0.8f;
+            particles.LightScale = Math.Clamp((light.X + light.Y + light.Z) / 3f, 0.15f, 1.1f);
+            particles.Update(world, dt);
+
             Raylib.BeginDrawing();
             Raylib.ClearBackground(dayNight.SkyColor);
 
@@ -76,6 +86,7 @@ public static class Program
             meshManager.Draw(terrainShader.Material, frustum);
 
             world.DrawHover();
+            particles.Draw();
             dayNight.Draw3D(camera);
 
             Raylib.EndMode3D();
