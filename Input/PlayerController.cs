@@ -183,6 +183,9 @@ public class PlayerController
     /// axis: 0=x, 1=y, 2=z
     /// Push player out of solid geometry and zero that velocity axis.
     /// Angeschnitzte Blöcke (Sculpt) kollidieren auf Sub-Voxel-Ebene.
+    /// Erst werden ALLE überlappenden Boxen eingesammelt, dann wird genau einmal
+    /// korrigiert — würde pro Box korrigiert, nullt die erste Box die Geschwindigkeit
+    /// und der Spieler bliebe in weiteren überlappenden Boxen stecken.
     /// </summary>
     private void ResolveCollisions(VoxelWorld world, ref Vector3 pos, ref Vector3 vel, int axis)
     {
@@ -192,6 +195,10 @@ public class PlayerController
         int iy1 = (int)MathF.Floor(pos.Y + Height);
         int iz0 = (int)MathF.Floor(pos.Z - HalfWidth);
         int iz1 = (int)MathF.Floor(pos.Z + HalfWidth);
+
+        bool hit = false;
+        float minBound = float.MaxValue; // kleinste Unterkante aller überlappenden Boxen (auf der Achse)
+        float maxBound = float.MinValue; // größte Oberkante
 
         for (int x = ix0; x <= ix1; x++)
         for (int y = iy0; y <= iy1; y++)
@@ -207,52 +214,67 @@ public class PlayerController
                 for (int sx = 0; sx < SubVoxels.Divisions; sx++)
                 {
                     if (!SubVoxels.HasBit(mask, sx, sy, sz)) continue;
-                    ResolveBox(ref pos, ref vel, axis, x + sx * cell, y + sy * cell, z + sz * cell, cell);
+                    AccumulateBox(in pos, x + sx * cell, y + sy * cell, z + sz * cell, cell, axis,
+                        ref hit, ref minBound, ref maxBound);
                 }
             }
             else
             {
-                ResolveBox(ref pos, ref vel, axis, x, y, z, 1f);
+                AccumulateBox(in pos, x, y, z, 1f, axis, ref hit, ref minBound, ref maxBound);
             }
+        }
+
+        if (!hit) return;
+
+        if (axis == 0)
+        {
+            if (vel.X > 0f) pos.X = minBound - HalfWidth - 0.0001f;
+            else if (vel.X < 0f) pos.X = maxBound + HalfWidth + 0.0001f;
+            vel.X = 0f;
+        }
+        else if (axis == 2)
+        {
+            if (vel.Z > 0f) pos.Z = minBound - HalfWidth - 0.0001f;
+            else if (vel.Z < 0f) pos.Z = maxBound + HalfWidth + 0.0001f;
+            vel.Z = 0f;
+        }
+        else // Y
+        {
+            if (vel.Y > 0f) pos.Y = minBound - Height - 0.0001f;
+            else if (vel.Y < 0f) pos.Y = maxBound + 0.0001f;
+            vel.Y = 0f;
         }
     }
 
-    // Schiebt den Spieler aus einer soliden Box heraus — nur auf der bewegten Achse
-    private void ResolveBox(ref Vector3 pos, ref Vector3 vel, int axis, float bMinX, float bMinY, float bMinZ, float size)
+    // Sammelt die Achsen-Grenzen einer soliden Box ein, falls sie den Spieler überlappt
+    private void AccumulateBox(in Vector3 pos, float bMinX, float bMinY, float bMinZ, float size, int axis,
+        ref bool hit, ref float minBound, ref float maxBound)
     {
         float bMaxX = bMinX + size;
         float bMaxY = bMinY + size;
         float bMaxZ = bMinZ + size;
 
-        float minX = pos.X - HalfWidth;
-        float maxX = pos.X + HalfWidth;
-        float minY = pos.Y;
-        float maxY = pos.Y + Height;
-        float minZ = pos.Z - HalfWidth;
-        float maxZ = pos.Z + HalfWidth;
-
-        if (maxX <= bMinX || minX >= bMaxX ||
-            maxY <= bMinY || minY >= bMaxY ||
-            maxZ <= bMinZ || minZ >= bMaxZ)
+        if (pos.X + HalfWidth <= bMinX || pos.X - HalfWidth >= bMaxX ||
+            pos.Y + Height <= bMinY || pos.Y >= bMaxY ||
+            pos.Z + HalfWidth <= bMinZ || pos.Z - HalfWidth >= bMaxZ)
             return;
+
+        hit = true;
 
         if (axis == 0)
         {
-            if (vel.X > 0f) pos.X = bMinX - HalfWidth - 0.0001f;
-            else if (vel.X < 0f) pos.X = bMaxX + HalfWidth + 0.0001f;
-            vel.X = 0f;
+            minBound = MathF.Min(minBound, bMinX);
+            maxBound = MathF.Max(maxBound, bMaxX);
         }
         else if (axis == 2)
         {
-            if (vel.Z > 0f) pos.Z = bMinZ - HalfWidth - 0.0001f;
-            else if (vel.Z < 0f) pos.Z = bMaxZ + HalfWidth + 0.0001f;
-            vel.Z = 0f;
+            minBound = MathF.Min(minBound, bMinZ);
+            maxBound = MathF.Max(maxBound, bMaxZ);
         }
-        else // Y
+        else
         {
-            if (vel.Y > 0f) pos.Y = bMinY - Height - 0.0001f;
-            else if (vel.Y < 0f) pos.Y = bMaxY + 0.0001f;
-            vel.Y = 0f;
+            minBound = MathF.Min(minBound, bMinY);
+            maxBound = MathF.Max(maxBound, bMaxY);
         }
     }
 }
