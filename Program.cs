@@ -1,6 +1,7 @@
 using Raylib_cs;
 using System.Numerics;
 using Terraformer.Effects;
+using Terraformer.Gameplay;
 using Terraformer.Rendering;
 using Terraformer.World;
 
@@ -51,6 +52,10 @@ public static class Program
         world.BlockBroken += particles.SpawnBlockBreak;
         world.BlockPlaced += particles.SpawnBlockPlace;
 
+        SkyPlatformSystem skyPlatforms = new SkyPlatformSystem();
+        skyPlatforms.PlatformCreated += particles.SpawnBlockPlace;
+        skyPlatforms.PlatformCrumbled += particles.SpawnBlockBreak;
+
         int smokeFrames = 0;
         bool debugOverlay = smokeTest; // im Testlauf direkt an, damit die Stats auf dem Screenshot stehen
 
@@ -68,6 +73,9 @@ public static class Program
 
             // Welt-Interaktion
             world.Update(camera, player.Bounds);
+
+            // Sky-Platforms: Space in der Luft
+            skyPlatforms.Update(world, player, dt);
 
             // Geänderte Chunks meshen (Worker-Thread) bzw. fertige Meshes hochladen
             meshManager.Update();
@@ -90,6 +98,7 @@ public static class Program
 
             world.DrawHover();
             particles.Draw();
+            skyPlatforms.Draw();
             dayNight.Draw3D(camera);
 
             if (debugOverlay)
@@ -102,7 +111,7 @@ public static class Program
 
             // UI
             Raylib.DrawFPS(10, 10);
-            Raylib.DrawText("WASD move | Space jump | LMB remove | RMB place", 10, 40, 20, Color.Black);
+            Raylib.DrawText("WASD move | Space jump | Space in air: platform | LMB remove | RMB place", 10, 40, 20, Color.Black);
             Raylib.DrawText("Z slower day | U faster day | F3 debug", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
@@ -120,6 +129,8 @@ public static class Program
             int cx = Raylib.GetScreenWidth() / 2;
             int cy = Raylib.GetScreenHeight() / 2;
             Raylib.DrawCircle(cx, cy, 4, Color.Black);
+
+            skyPlatforms.DrawHud(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
 
             Raylib.EndDrawing();
 
