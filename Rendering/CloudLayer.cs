@@ -15,8 +15,9 @@ public sealed class CloudLayer
     private const float Thickness = 3f;
     private const float DriftSpeed = 1.2f;   // Blöcke pro Sekunde
     private const float Coverage = 0.32f;
+    private const float Range = 260f;        // bis hinter das Fog-Ende, zieht mit dem Spieler mit
 
-    public void Draw(float time, float daylight01)
+    public void Draw(float time, float daylight01, Vector3 center)
     {
         // tagsüber fast weiß, nachts dunkles Blaugrau
         Color color = Lerp(
@@ -28,21 +29,22 @@ public sealed class CloudLayer
         int shift = (int)MathF.Floor(offset);
         float slide = (offset - shift) * CellSize;
 
-        int cellsX = (int)(VoxelWorld.StartChunksX * Chunk.Size / CellSize);
-        int cellsZ = (int)(VoxelWorld.StartChunksZ * Chunk.Size / CellSize);
+        int minX = (int)MathF.Floor((center.X - Range) / CellSize) - 1;
+        int maxX = (int)MathF.Floor((center.X + Range) / CellSize);
+        int minZ = (int)MathF.Floor((center.Z - Range) / CellSize);
+        int maxZ = (int)MathF.Floor((center.Z + Range) / CellSize);
 
-        // Eine Zelle Vorlauf in Driftrichtung, damit am Rand nichts aufpoppt
-        for (int cz = 0; cz < cellsZ; cz++)
-        for (int cx = -1; cx <= cellsX; cx++)
+        for (int cz = minZ; cz <= maxZ; cz++)
+        for (int cx = minX; cx <= maxX; cx++)
         {
             if (Hash(cx - shift, cz) > Coverage) continue;
 
-            var center = new Vector3(
+            var cloudCenter = new Vector3(
                 cx * CellSize + CellSize / 2f + slide,
                 CloudY,
                 cz * CellSize + CellSize / 2f);
 
-            Raylib.DrawCubeV(center, new Vector3(CellSize - 0.6f, Thickness, CellSize - 0.6f), color);
+            Raylib.DrawCubeV(cloudCenter, new Vector3(CellSize - 0.6f, Thickness, CellSize - 0.6f), color);
         }
     }
 

@@ -25,21 +25,21 @@ public static class Program
 
         DebugSettings settings = DebugSettings.Load();
 
-        VoxelWorld world = new VoxelWorld();
+        WorldStorage storage = new WorldStorage();
+        VoxelWorld world = new VoxelWorld(storage);
 
-        Vector3 worldCenter = new(
-            VoxelWorld.StartChunksX * Chunk.Size / 2f, 0,
-            VoxelWorld.StartChunksZ * Chunk.Size / 2f);
-
-        // Spieler mittig in der Startwelt spawnen (etwas über dem Terrain);
-        // im Testlauf stattdessen mit Blick quer über die Welt
+        // Spawn ist ein fester Punkt im (per Seed deterministischen) Terrain;
+        // im Testlauf stattdessen ein Aussichtspunkt mit Blick quer über die Welt
         PlayerController player = smokeTest
             ? new PlayerController(new Vector3(40, 58, 220), settings)
-            : new PlayerController(worldCenter + new Vector3(0, 60, 0), settings);
+            : new PlayerController(new Vector3(128, 60, 128), settings);
+
+        // Startbereich sofort laden, damit der Spieler auf festem Boden landet
+        world.EnsureAround(player.Position, 3);
 
         DayNightCycle dayNight = new DayNightCycle
         {
-            Center = worldCenter,
+            Center = player.Position,
             DayLengthSeconds = 240f,
             OrbitRadius = 300f,
             DrawSunAndMoon = true
@@ -76,6 +76,12 @@ public static class Program
 
             // Player bewegt sich + liefert Kamera
             Camera3D camera = player.Update(world, dt);
+
+            // Welt um den Spieler streamen (Budget: max. 2 neue Chunks pro Frame)
+            world.UpdateStreaming(player.Position, 2);
+
+            // Sonne/Mond wandern mit dem Spieler mit — wirken dadurch unendlich fern
+            dayNight.Center = player.Position;
 
             // Day/Night Update (Speed: Z/U)
             dayNight.Update(dt);
@@ -116,11 +122,11 @@ public static class Program
             particles.Draw();
             dayNight.Draw3D(camera);
             stars.Draw(camera, 1f - dayNight.Daylight01, elapsedTime);
-            clouds.Draw(elapsedTime, dayNight.Daylight01);
+            clouds.Draw(elapsedTime, dayNight.Daylight01, player.Position);
 
             if (debugOverlay)
             {
-                GridRenderer.DrawFromOrigin(VoxelWorld.StartChunksX * Chunk.Size, 1.0f);
+                GridRenderer.DrawFromOrigin(256, 1.0f);
                 meshManager.DrawChunkBounds();
             }
 
@@ -136,6 +142,7 @@ public static class Program
             {
                 string stats =
                     $"Chunks {meshManager.VisibleChunks}/{meshManager.MeshedChunks} | " +
+                    $"Loaded {world.LoadedChunkCount} | " +
                     $"Verts {meshManager.TotalVertices / 1000}k | " +
                     $"Queue {meshManager.PendingChunks} | " +
                     $"Particles {particles.ActiveParticles}";
@@ -165,6 +172,7 @@ public static class Program
             }
         }
 
+        world.SaveModified();
         settings.Save();
         meshManager.Dispose();
         terrainShader.Unload();

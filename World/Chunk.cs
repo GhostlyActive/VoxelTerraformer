@@ -12,13 +12,27 @@ public class Chunk
     public readonly ChunkCoord Coord;
     public readonly Vector3 WorldPosition;
 
-    public Chunk(ChunkCoord coord, int worldHeight)
+    /// <summary>True, sobald der Chunk seit Generierung/Laden verändert wurde → muss gespeichert werden</summary>
+    public bool Modified { get; private set; }
+
+    public Chunk(ChunkCoord coord, int worldHeight, byte[]? loadedBlocks = null)
     {
         Coord = coord;
         WorldPosition = new Vector3(coord.X * Size, 0, coord.Z * Size);
-        _blocks = new byte[Size * worldHeight * Size];
-        GenerateTerrain(worldHeight);
+
+        if (loadedBlocks != null)
+        {
+            _blocks = loadedBlocks;
+        }
+        else
+        {
+            _blocks = new byte[Size * worldHeight * Size];
+            GenerateTerrain(worldHeight);
+        }
     }
+
+    // Direkter Zugriff nur für Speichern/Laden — nicht aus Gameplay-Code verwenden
+    internal byte[] RawBlocks => _blocks;
 
     public int GetLocal(int x, int y, int z, int worldHeight)
     {
@@ -30,6 +44,7 @@ public class Chunk
     {
         if (!InBounds(x, y, z, worldHeight)) return;
         _blocks[Index(x, y, z)] = (byte)Math.Clamp(id, 0, 255);
+        Modified = true;
     }
 
     // Kopiert eine komplette X-Zeile am Stück (für den Mesh-Snapshot)

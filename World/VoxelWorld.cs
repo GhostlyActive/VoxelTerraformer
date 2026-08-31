@@ -8,10 +8,16 @@ namespace Terraformer.World;
 public class VoxelWorld
 {
     public const int WorldHeight = 64;
-    public const int StartChunksX = 8;
-    public const int StartChunksZ = 8;
+
+    // Streaming: geladen wird im Kreis um den Spieler, entladen mit Hysterese
+    // (LoadRadius * Chunkgröße = 256 Blöcke — liegt hinter dem Fog-Ende, Nachladen bleibt unsichtbar)
+    public const int LoadRadius = 8;
+    public const int UnloadRadius = 10;
+
+    private static readonly (int X, int Z)[] _loadOrder = BuildLoadOrder();
 
     private readonly Dictionary<ChunkCoord, Chunk> _chunks = new();
+    private readonly WorldStorage _storage;
 
     // Ziel im Fadenkreuz: entweder ein getroffener Block (Hover) oder — wenn innerhalb
     // der Reichweite nichts im Weg ist — eine freie Zelle in der Luft (Ghost)
@@ -33,17 +39,112 @@ public class VoxelWorld
     /// <summary>Block gesetzt: Zentrum + Albedo</summary>
     public event Action<Vector3, Color>? BlockPlaced;
 
+    /// <summary>Chunk wurde entladen — Mesh kann weg</summary>
+    public event Action<ChunkCoord>? ChunkUnloaded;
+
     public IEnumerable<Chunk> Chunks => _chunks.Values;
 
-    public VoxelWorld()
+    public int LoadedChunkCount => _chunks.Count;
+
+    public VoxelWorld(WorldStorage storage)
     {
-        for (int cz = 0; cz < StartChunksZ; cz++)
-        for (int cx = 0; cx < StartChunksX; cx++)
-            GetOrCreateChunk(new ChunkCoord(cx, cz));
+        _storage = storage;
     }
 
     public bool TryGetChunk(ChunkCoord coord, out Chunk chunk)
         => _chunks.TryGetValue(coord, out chunk!);
+
+    // --- Streaming ---
+
+    /// <summary>Lädt sofort alles im Radius (Blocking) — für den Spielstart um den Spawn</summary>
+    public void EnsureAround(Vector3 position, int radiusChunks)
+    {
+        (int pcx, int pcz) = PositionToChunk(position);
+
+        for (int dz = -radiusChunks; dz <= radiusChunks; dz++)
+        for (int dx = -radiusChunks; dx <= radiusChunks; dx++)
+        {
+            var coord = new ChunkCoord(pcx + dx, pcz + dz);
+            if (!_chunks.ContainsKey(coord)) LoadChunk(coord);
+        }
+    }
+
+    /// <summary>Pro Frame aufrufen: lädt die nächsten fehlenden Chunks (Budget) und entlädt ferne</summary>
+    public void UpdateStreaming(Vector3 playerPosition, int loadBudget)
+    {
+        (int pcx, int pcz) = PositionToChunk(playerPosition);
+
+        List<ChunkCoord>? toUnload = null;
+        foreach (ChunkCoord coord in _chunks.Keys)
+        {
+            int dx = coord.X - pcx;
+            int dz = coord.Z - pcz;
+            if (dx * dx + dz * dz <= UnloadRadius * UnloadRadius) continue;
+            (toUnload ??= new List<ChunkCoord>()).Add(coord);
+        }
+
+        if (toUnload != null)
+            foreach (ChunkCoord coord in toUnload)
+                UnloadChunk(coord);
+
+        foreach ((int offsetX, int offsetZ) in _loadOrder)
+        {
+            if (loadBudget <= 0) break;
+
+            var coord = new ChunkCoord(pcx + offsetX, pcz + offsetZ);
+            if (_chunks.ContainsKey(coord)) continue;
+
+            LoadChunk(coord);
+            loadBudget--;
+        }
+    }
+
+    /// <summary>Alle veränderten Chunks auf Platte schreiben (beim Beenden)</summary>
+    public void SaveModified()
+    {
+        foreach ((ChunkCoord coord, Chunk chunk) in _chunks)
+            if (chunk.Modified)
+                _storage.Save(coord, chunk.RawBlocks);
+    }
+
+    private void LoadChunk(ChunkCoord coord)
+    {
+        Chunk chunk = _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks)
+            ? new Chunk(coord, WorldHeight, blocks)
+            : new Chunk(coord, WorldHeight);
+
+        _chunks.Add(coord, chunk);
+
+        // Selbst + alle 8 Nachbarn neu meshen: Grenzflächen zu vorher "leerem" Nachbarraum
+        // verschwinden, und AO an den Rändern stimmt erst mit Nachbardaten
+        for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++)
+            ChunkDirty?.Invoke(new ChunkCoord(coord.X + dx, coord.Z + dz));
+    }
+
+    private void UnloadChunk(ChunkCoord coord)
+    {
+        if (!_chunks.Remove(coord, out Chunk? chunk)) return;
+
+        if (chunk.Modified) _storage.Save(coord, chunk.RawBlocks);
+        ChunkUnloaded?.Invoke(coord);
+    }
+
+    private static (int cx, int cz) PositionToChunk(Vector3 position)
+        => (FloorDiv((int)MathF.Floor(position.X), Chunk.Size),
+            FloorDiv((int)MathF.Floor(position.Z), Chunk.Size));
+
+    private static (int X, int Z)[] BuildLoadOrder()
+    {
+        var offsets = new List<(int X, int Z)>();
+        for (int dz = -LoadRadius; dz <= LoadRadius; dz++)
+        for (int dx = -LoadRadius; dx <= LoadRadius; dx++)
+            if (dx * dx + dz * dz <= LoadRadius * LoadRadius)
+                offsets.Add((dx, dz));
+
+        offsets.Sort((a, b) => (a.X * a.X + a.Z * a.Z).CompareTo(b.X * b.X + b.Z * b.Z));
+        return offsets.ToArray();
+    }
 
     public void Update(Camera3D camera, BoundingBox playerBounds, float buildReach)
     {
@@ -154,7 +255,7 @@ public class VoxelWorld
         if (wy < 0 || wy >= WorldHeight) return;
 
         var (cc, lx, lz) = WorldToChunk(wx, wz);
-        var chunk = GetOrCreateChunk(cc);
+        if (!_chunks.TryGetValue(cc, out var chunk)) return; // außerhalb der geladenen Welt
 
         chunk.SetLocal(lx, wy, lz, id, WorldHeight);
 
@@ -179,16 +280,6 @@ public class VoxelWorld
         if (west && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z + 1));
         if (east && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z - 1));
         if (east && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z + 1));
-    }
-
-    private Chunk GetOrCreateChunk(ChunkCoord cc)
-    {
-        if (_chunks.TryGetValue(cc, out var existing))
-            return existing;
-
-        var created = new Chunk(cc, WorldHeight);
-        _chunks.Add(cc, created);
-        return created;
     }
 
     // --- Coordinate helpers ---

@@ -41,9 +41,19 @@ public sealed class ChunkMeshManager : IDisposable
     {
         _world = world;
         _world.ChunkDirty += coord => _dirty.Add(coord);
+        _world.ChunkUnloaded += OnChunkUnloaded;
 
         _worker = new Thread(WorkerLoop) { IsBackground = true, Name = "ChunkMesher" };
         _worker.Start();
+    }
+
+    private void OnChunkUnloaded(ChunkCoord coord)
+    {
+        _dirty.Remove(coord);
+        // Ein evtl. laufender Job wird beim Eintreffen des Ergebnisses verworfen (Chunk existiert nicht mehr)
+
+        if (_entries.Remove(coord, out Entry? entry) && entry.HasMesh)
+            Raylib.UnloadMesh(entry.Mesh);
     }
 
     /// <summary>Meshed alle vorhandenen Chunks synchron — einmalig beim Start, damit die Welt komplett dasteht</summary>
@@ -65,6 +75,7 @@ public sealed class ChunkMeshManager : IDisposable
         while (_results.TryDequeue(out MeshResult result))
         {
             _inFlight.Remove(result.Coord);
+            if (!_world.TryGetChunk(result.Coord, out _)) continue; // inzwischen entladen
             Upload(result.Coord, result.Data);
         }
 
