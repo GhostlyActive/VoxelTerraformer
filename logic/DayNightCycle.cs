@@ -27,8 +27,11 @@ public class DayNightCycle
     /// <summary>0..1: 0 = Nacht, 1 = Tag</summary>
     public float Daylight01 { get; private set; }
 
-    /// <summary>Background-Farbe für ClearBackground()</summary>
+    /// <summary>Himmelsfarbe am Horizont (auch Fog-Farbe)</summary>
     public Color SkyColor { get; private set; }
+
+    /// <summary>Himmelsfarbe am Zenit — dunkler als der Horizont, für den vertikalen Verlauf</summary>
+    public Color SkyZenithColor { get; private set; }
 
     /// <summary>Normiert, zeigt von der Sonne in die Welt (für den Terrain-Shader)</summary>
     public Vector3 SunDirection { get; private set; } = new(0, -1, 0);
@@ -88,6 +91,11 @@ public class DayNightCycle
         Color duskTint = new Color { R = 255, G = 150, B = 80, A = 255 };
 
         SkyColor = LerpColor(baseSky, duskTint, dusk * 0.25f);
+
+        // Zenit deutlich tiefer/dunkler als der Horizont, Dämmerung färbt ihn nur leicht
+        Color nightZenith = new Color { R = 4, G = 6, B = 18, A = 255 };
+        Color dayZenith = new Color { R = 70, G = 130, B = 215, A = 255 };
+        SkyZenithColor = LerpColor(LerpColor(nightZenith, dayZenith, Daylight01), duskTint, dusk * 0.10f);
 
         // Licht fürs Terrain (Shader): mittags neutral-warm, in der Dämmerung orange, nachts nur Ambient
         SunDirection = Vector3.Normalize(Center - SunPosition);

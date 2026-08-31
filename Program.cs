@@ -58,12 +58,16 @@ public static class Program
 
         DebugMenu debugMenu = new DebugMenu(settings);
 
+        StarField stars = new StarField();
+
         int smokeFrames = 0;
         bool debugOverlay = smokeTest; // im Testlauf direkt an, damit die Stats auf dem Screenshot stehen
+        float elapsedTime = 0f;
 
         while (!Raylib.WindowShouldClose())
         {
             float dt = Raylib.GetFrameTime();
+            elapsedTime += dt;
 
             if (Raylib.IsKeyPressed(KeyboardKey.F3)) debugOverlay = !debugOverlay;
 
@@ -92,7 +96,12 @@ public static class Program
             particles.Update(world, dt);
 
             Raylib.BeginDrawing();
-            Raylib.ClearBackground(dayNight.SkyColor);
+
+            // Himmel als vertikaler Verlauf: Zenit dunkler, Horizont heller (= Fog-Farbe)
+            Raylib.ClearBackground(dayNight.SkyZenithColor);
+            Raylib.DrawRectangleGradientV(
+                0, 0, Raylib.GetScreenWidth(), Raylib.GetScreenHeight(),
+                dayNight.SkyZenithColor, dayNight.SkyColor);
 
             Raylib.BeginMode3D(camera);
 
@@ -105,6 +114,7 @@ public static class Program
             world.DrawHover();
             particles.Draw();
             dayNight.Draw3D(camera);
+            stars.Draw(camera, 1f - dayNight.Daylight01, elapsedTime);
 
             if (debugOverlay)
             {
