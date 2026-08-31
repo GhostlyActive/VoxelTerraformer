@@ -38,9 +38,6 @@ public class PlayerController
 
     public bool IsGrounded => _grounded;
 
-    /// <summary>True, wenn in diesem Frame ein Sprung ausgelöst wurde (der Space-Druck ist damit verbraucht)</summary>
-    public bool JumpedThisFrame { get; private set; }
-
     public BoundingBox Bounds => new(
         new Vector3(Position.X - HalfWidth, Position.Y, Position.Z - HalfWidth),
         new Vector3(Position.X + HalfWidth, Position.Y + Height, Position.Z + HalfWidth));
@@ -80,8 +77,6 @@ public class PlayerController
         _velocity.Z = move.Z;
 
         // Jump (mit Coyote-Time und Jump-Buffer)
-        JumpedThisFrame = false;
-
         _timeSinceJumpPressed += dt;
         if (Raylib.IsKeyPressed(KeyboardKey.Space)) _timeSinceJumpPressed = 0f;
 
@@ -95,7 +90,6 @@ public class PlayerController
             _grounded = false;
             _timeSinceGrounded = CoyoteTime;     // Coyote verbraucht — kein zweiter Sprung aus der Luft
             _timeSinceJumpPressed = JumpBufferTime; // Buffer verbraucht
-            JumpedThisFrame = true;
         }
 
         // Gravity

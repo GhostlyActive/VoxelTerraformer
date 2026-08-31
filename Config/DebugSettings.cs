@@ -13,8 +13,6 @@ public sealed class DebugSettings
     public float SprintMultiplier { get; set; } = 1.6f;
     public float JumpSpeed { get; set; } = 10.2f;
     public float Gravity { get; set; } = 18.0f;
-    public float PlatformLifetime { get; set; } = 3.0f;
-    public int PlatformCharges { get; set; } = 3;
 
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -59,7 +57,5 @@ public sealed class DebugSettings
         SprintMultiplier = defaults.SprintMultiplier;
         JumpSpeed = defaults.JumpSpeed;
         Gravity = defaults.Gravity;
-        PlatformLifetime = defaults.PlatformLifetime;
-        PlatformCharges = defaults.PlatformCharges;
     }
 }

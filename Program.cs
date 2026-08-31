@@ -2,7 +2,6 @@ using Raylib_cs;
 using System.Numerics;
 using Terraformer.Config;
 using Terraformer.Effects;
-using Terraformer.Gameplay;
 using Terraformer.Rendering;
 using Terraformer.UI;
 using Terraformer.World;
@@ -57,10 +56,6 @@ public static class Program
         world.BlockBroken += particles.SpawnBlockBreak;
         world.BlockPlaced += particles.SpawnBlockPlace;
 
-        SkyPlatformSystem skyPlatforms = new SkyPlatformSystem(settings);
-        skyPlatforms.PlatformCreated += particles.SpawnBlockPlace;
-        skyPlatforms.PlatformCrumbled += particles.SpawnBlockBreak;
-
         DebugMenu debugMenu = new DebugMenu(settings);
 
         int smokeFrames = 0;
@@ -83,10 +78,6 @@ public static class Program
             // Welt-Interaktion
             world.Update(camera, player.Bounds);
 
-            // Sky-Platforms: Space in der Luft, Q wechselt den Modus
-            Vector3 lookDirection = Vector3.Normalize(camera.Target - camera.Position);
-            skyPlatforms.Update(world, player, lookDirection, dt);
-
             // Geänderte Chunks meshen (Worker-Thread) bzw. fertige Meshes hochladen
             meshManager.Update();
 
@@ -108,7 +99,6 @@ public static class Program
 
             world.DrawHover();
             particles.Draw();
-            skyPlatforms.Draw();
             dayNight.Draw3D(camera);
 
             if (debugOverlay)
@@ -121,8 +111,8 @@ public static class Program
 
             // UI
             Raylib.DrawFPS(10, 10);
-            Raylib.DrawText("WASD move | Shift sprint | Space jump | Space in air: platform | Q mode", 10, 40, 20, Color.Black);
-            Raylib.DrawText("LMB remove | RMB place | Z/U day speed | F3 debug | M tuning", 10, 65, 20, Color.Black);
+            Raylib.DrawText("WASD move | Shift sprint | Space jump | LMB remove | RMB place", 10, 40, 20, Color.Black);
+            Raylib.DrawText("Z/U day speed | F3 debug | M tuning", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
             if (debugOverlay)
@@ -140,7 +130,6 @@ public static class Program
             int cy = Raylib.GetScreenHeight() / 2;
             Raylib.DrawCircle(cx, cy, 4, Color.Black);
 
-            skyPlatforms.DrawHud(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
             debugMenu.Draw(Raylib.GetScreenWidth());
 
             Raylib.EndDrawing();

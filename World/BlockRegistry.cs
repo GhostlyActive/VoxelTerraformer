@@ -16,7 +16,6 @@ public static class BlockRegistry
     public const byte Air = 0;
     public const byte Terrain = 1;
     public const byte Stone = 2;
-    public const byte Platform = 3;
 
     private static readonly BlockDef[] _defs = new BlockDef[256];
 
@@ -28,9 +27,6 @@ public static class BlockRegistry
         Register(new BlockDef(Terrain, "Terrain", Solid: true, Hardness: 1f, new Color(255, 255, 255, 255), UseHeightGradient: true, Emissive: 0f));
 
         Register(new BlockDef(Stone, "Stone", Solid: true, Hardness: 1.5f, new Color(168, 164, 158, 255), UseHeightGradient: false, Emissive: 0f));
-
-        // Sky-Platform: leuchtet leicht (Emissive), damit sie sich vom Terrain abhebt und nachts sichtbar bleibt
-        Register(new BlockDef(Platform, "Platform", Solid: true, Hardness: 0.5f, new Color(95, 225, 235, 255), UseHeightGradient: false, Emissive: 0.35f));
     }
 
     private static void Register(BlockDef def) => _defs[def.Id] = def;
