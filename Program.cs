@@ -1,8 +1,10 @@
 using Raylib_cs;
 using System.Numerics;
+using Terraformer.Config;
 using Terraformer.Effects;
 using Terraformer.Gameplay;
 using Terraformer.Rendering;
+using Terraformer.UI;
 using Terraformer.World;
 
 namespace Terraformer;
@@ -20,6 +22,9 @@ public static class Program
         Raylib.InitWindow(screenWidth, screenHeight, "Terraformer");
         Raylib.SetTargetFPS(60);
         if (!smokeTest) Raylib.DisableCursor();
+        else Raylib.SetMousePosition(screenWidth / 2, screenHeight / 2); // sonst verdreht das erste Maus-Delta die Testkamera
+
+        DebugSettings settings = DebugSettings.Load();
 
         VoxelWorld world = new VoxelWorld();
 
@@ -30,8 +35,8 @@ public static class Program
         // Spieler mittig in der Startwelt spawnen (etwas über dem Terrain);
         // im Testlauf stattdessen mit Blick quer über die Welt
         PlayerController player = smokeTest
-            ? new PlayerController(new Vector3(40, 58, 220))
-            : new PlayerController(worldCenter + new Vector3(0, 60, 0));
+            ? new PlayerController(new Vector3(40, 58, 220), settings)
+            : new PlayerController(worldCenter + new Vector3(0, 60, 0), settings);
 
         DayNightCycle dayNight = new DayNightCycle
         {
@@ -52,9 +57,11 @@ public static class Program
         world.BlockBroken += particles.SpawnBlockBreak;
         world.BlockPlaced += particles.SpawnBlockPlace;
 
-        SkyPlatformSystem skyPlatforms = new SkyPlatformSystem();
+        SkyPlatformSystem skyPlatforms = new SkyPlatformSystem(settings);
         skyPlatforms.PlatformCreated += particles.SpawnBlockPlace;
         skyPlatforms.PlatformCrumbled += particles.SpawnBlockBreak;
+
+        DebugMenu debugMenu = new DebugMenu(settings);
 
         int smokeFrames = 0;
         bool debugOverlay = smokeTest; // im Testlauf direkt an, damit die Stats auf dem Screenshot stehen
@@ -64,6 +71,8 @@ public static class Program
             float dt = Raylib.GetFrameTime();
 
             if (Raylib.IsKeyPressed(KeyboardKey.F3)) debugOverlay = !debugOverlay;
+
+            debugMenu.Update();
 
             // Player bewegt sich + liefert Kamera
             Camera3D camera = player.Update(world, dt);
@@ -113,7 +122,7 @@ public static class Program
             // UI
             Raylib.DrawFPS(10, 10);
             Raylib.DrawText("WASD move | Shift sprint | Space jump | Space in air: platform | Q mode", 10, 40, 20, Color.Black);
-            Raylib.DrawText("LMB remove | RMB place | Z/U day speed | F3 debug", 10, 65, 20, Color.Black);
+            Raylib.DrawText("LMB remove | RMB place | Z/U day speed | F3 debug | M tuning", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
             if (debugOverlay)
@@ -132,6 +141,7 @@ public static class Program
             Raylib.DrawCircle(cx, cy, 4, Color.Black);
 
             skyPlatforms.DrawHud(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
+            debugMenu.Draw(Raylib.GetScreenWidth());
 
             Raylib.EndDrawing();
 
@@ -142,6 +152,7 @@ public static class Program
             }
         }
 
+        settings.Save();
         meshManager.Dispose();
         terrainShader.Unload();
         Raylib.CloseWindow();

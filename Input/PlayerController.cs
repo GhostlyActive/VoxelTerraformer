@@ -1,5 +1,6 @@
 using Raylib_cs;
 using System.Numerics;
+using Terraformer.Config;
 using Terraformer.World;
 
 namespace Terraformer;
@@ -18,11 +19,8 @@ public class PlayerController
     private const float Height = 1.80f;
     private const float EyeHeight = 1.62f;
 
-    // Movement tuning
-    private const float MoveSpeed = 7.0f;
-    private const float SprintMultiplier = 1.6f;
-    private const float JumpSpeed = 10.2f;
-    private const float Gravity = 18.0f;
+    // Movement-Tuning kommt aus den DebugSettings (Menü auf M) und ist live änderbar
+    private readonly DebugSettings _settings;
 
     // FOV zieht beim Sprinten leicht auf — verkauft das Tempo spürbar
     private const float BaseFov = 60f;
@@ -47,8 +45,9 @@ public class PlayerController
         new Vector3(Position.X - HalfWidth, Position.Y, Position.Z - HalfWidth),
         new Vector3(Position.X + HalfWidth, Position.Y + Height, Position.Z + HalfWidth));
 
-    public PlayerController(Vector3 startPos)
+    public PlayerController(Vector3 startPos, DebugSettings settings)
     {
+        _settings = settings;
         Position = startPos;
         _yaw = 135f;
         _pitch = -15f;
@@ -73,7 +72,7 @@ public class PlayerController
         Vector3 right = Vector3.Normalize(Vector3.Cross(forward, Vector3.UnitY));
 
         bool sprinting = Raylib.IsKeyDown(KeyboardKey.LeftShift) && wish.LengthSquared() > 0f;
-        float speed = MoveSpeed * (sprinting ? SprintMultiplier : 1f);
+        float speed = _settings.WalkSpeed * (sprinting ? _settings.SprintMultiplier : 1f);
         Vector3 move = (right * wish.X + forward * wish.Z) * speed;
 
         // Apply horizontal velocity (simple “arcade”)
@@ -92,7 +91,7 @@ public class PlayerController
         bool canJump = _grounded || _timeSinceGrounded < CoyoteTime;
         if (canJump && _timeSinceJumpPressed < JumpBufferTime)
         {
-            _velocity.Y = JumpSpeed;
+            _velocity.Y = _settings.JumpSpeed;
             _grounded = false;
             _timeSinceGrounded = CoyoteTime;     // Coyote verbraucht — kein zweiter Sprung aus der Luft
             _timeSinceJumpPressed = JumpBufferTime; // Buffer verbraucht
@@ -100,7 +99,7 @@ public class PlayerController
         }
 
         // Gravity
-        _velocity.Y -= Gravity * dt;
+        _velocity.Y -= _settings.Gravity * dt;
         if (_velocity.Y < -60f) _velocity.Y = -60f;
 
         // Move & collide (axis separated)
@@ -127,7 +126,7 @@ public class PlayerController
     {
         // Mouse delta
         Vector2 md = Raylib.GetMouseDelta();
-        const float sensitivity = 0.12f;
+        float sensitivity = _settings.MouseSensitivity;
 
         _yaw -= md.X * sensitivity;
         _pitch -= md.Y * sensitivity;

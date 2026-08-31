@@ -1,5 +1,6 @@
 using Raylib_cs;
 using System.Numerics;
+using Terraformer.Config;
 using Terraformer.World;
 
 namespace Terraformer.Gameplay;
@@ -21,22 +22,27 @@ public sealed class SkyPlatformSystem
     private sealed class PlatformGroup
     {
         public required List<(int X, int Y, int Z)> Cells { get; init; }
+        public required float PlacedAt { get; init; }
         public required float ExpiresAt { get; init; }
     }
 
-    public const int MaxCharges = 3;
-
-    private const float Lifetime = 3.0f;
     private const float WarnTime = 0.9f;       // Restzeit, ab der die Plattform sichtbar warnt
     private const float SpawnFlashTime = 0.15f;
     private const float SpawnCooldown = 0.15f;
 
+    private readonly DebugSettings _settings;
     private readonly List<PlatformGroup> _groups = new();
     private float _time;
     private float _lastSpawnTime = -999f;
 
-    public int Charges { get; private set; } = MaxCharges;
+    public int Charges { get; private set; }
     public PlatformMode Mode { get; private set; } = PlatformMode.Single;
+
+    public SkyPlatformSystem(DebugSettings settings)
+    {
+        _settings = settings;
+        Charges = settings.PlatformCharges;
+    }
 
     public string ModeLabel => Mode switch
     {
@@ -58,7 +64,8 @@ public sealed class SkyPlatformSystem
         if (Raylib.IsKeyPressed(KeyboardKey.Q))
             Mode = (PlatformMode)(((int)Mode + 1) % 3);
 
-        if (player.IsGrounded) Charges = MaxCharges;
+        if (player.IsGrounded) Charges = _settings.PlatformCharges;
+        if (Charges > _settings.PlatformCharges) Charges = _settings.PlatformCharges;
 
         // Space in der Luft — aber nur, wenn der Druck nicht schon einen (Coyote-)Sprung ausgelöst hat
         bool wantsPlatform =
@@ -114,7 +121,7 @@ public sealed class SkyPlatformSystem
             cells.Add((x, baseY, z));
         }
 
-        _groups.Add(new PlatformGroup { Cells = cells, ExpiresAt = _time + Lifetime });
+        _groups.Add(new PlatformGroup { Cells = cells, PlacedAt = _time, ExpiresAt = _time + _settings.PlatformLifetime });
         Charges -= cost;
         _lastSpawnTime = _time;
 
@@ -159,7 +166,7 @@ public sealed class SkyPlatformSystem
         foreach (PlatformGroup group in _groups)
         {
             float remaining = group.ExpiresAt - _time;
-            float age = Lifetime - remaining;
+            float age = _time - group.PlacedAt;
 
             foreach ((int x, int y, int z) in group.Cells)
             {
@@ -190,10 +197,11 @@ public sealed class SkyPlatformSystem
         const float radius = 10f;
         const float spacing = 32f;
 
-        float startX = screenWidth / 2f - (MaxCharges - 1) * spacing / 2f;
+        int maxCharges = _settings.PlatformCharges;
+        float startX = screenWidth / 2f - (maxCharges - 1) * spacing / 2f;
         float y = screenHeight - 36f;
 
-        for (int i = 0; i < MaxCharges; i++)
+        for (int i = 0; i < maxCharges; i++)
         {
             var center = new Vector2(startX + i * spacing, y);
             bool filled = i < Charges;
@@ -205,7 +213,10 @@ public sealed class SkyPlatformSystem
 
         string label = $"{ModeLabel} ({ChargeCost(Mode)})";
         int labelWidth = Raylib.MeasureText(label, 16);
-        Raylib.DrawText(label, (int)(screenWidth / 2f - labelWidth / 2f), (int)(y - 32f), 16, new Color(25, 35, 45, 230));
+        int labelX = (int)(screenWidth / 2f - labelWidth / 2f);
+        int labelY = (int)(y - 32f);
+        Raylib.DrawText(label, labelX + 1, labelY + 1, 16, new Color(10, 15, 25, 200));
+        Raylib.DrawText(label, labelX, labelY, 16, new Color(220, 245, 250, 240));
     }
 
     private static Color PlatformColor => BlockRegistry.Get(BlockRegistry.Platform).BaseColor;
