@@ -52,10 +52,13 @@ public static class Program
         world.BlockPlaced += particles.SpawnBlockPlace;
 
         int smokeFrames = 0;
+        bool debugOverlay = smokeTest; // im Testlauf direkt an, damit die Stats auf dem Screenshot stehen
 
         while (!Raylib.WindowShouldClose())
         {
             float dt = Raylib.GetFrameTime();
+
+            if (Raylib.IsKeyPressed(KeyboardKey.F3)) debugOverlay = !debugOverlay;
 
             // Player bewegt sich + liefert Kamera
             Camera3D camera = player.Update(world, dt);
@@ -89,13 +92,29 @@ public static class Program
             particles.Draw();
             dayNight.Draw3D(camera);
 
+            if (debugOverlay)
+            {
+                GridRenderer.DrawFromOrigin(VoxelWorld.StartChunksX * Chunk.Size, 1.0f);
+                meshManager.DrawChunkBounds();
+            }
+
             Raylib.EndMode3D();
 
             // UI
             Raylib.DrawFPS(10, 10);
             Raylib.DrawText("WASD move | Space jump | LMB remove | RMB place", 10, 40, 20, Color.Black);
-            Raylib.DrawText("Z slower day | U faster day", 10, 65, 20, Color.Black);
+            Raylib.DrawText("Z slower day | U faster day | F3 debug", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
+
+            if (debugOverlay)
+            {
+                string stats =
+                    $"Chunks {meshManager.VisibleChunks}/{meshManager.MeshedChunks} | " +
+                    $"Verts {meshManager.TotalVertices / 1000}k | " +
+                    $"Queue {meshManager.PendingChunks} | " +
+                    $"Particles {particles.ActiveParticles}";
+                Raylib.DrawText(stats, 10, 115, 20, Color.DarkBlue);
+            }
 
             // Crosshair
             int cx = Raylib.GetScreenWidth() / 2;

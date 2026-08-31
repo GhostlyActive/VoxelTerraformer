@@ -175,6 +175,20 @@ public sealed class ChunkMeshManager : IDisposable
         }
     }
 
+    public void DrawChunkBounds()
+    {
+        foreach ((ChunkCoord coord, Entry entry) in _entries)
+        {
+            if (!entry.HasMesh) continue;
+
+            var center = new Vector3(
+                coord.X * Chunk.Size + Chunk.Size / 2f,
+                VoxelWorld.WorldHeight / 2f,
+                coord.Z * Chunk.Size + Chunk.Size / 2f);
+            Raylib.DrawCubeWires(center, Chunk.Size, VoxelWorld.WorldHeight, Chunk.Size, Color.Magenta);
+        }
+    }
+
     public void Dispose()
     {
         _jobs.CompleteAdding();
