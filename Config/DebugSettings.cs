@@ -52,14 +52,4 @@ public sealed class DebugSettings
         }
     }
 
-    public void ResetToDefaults()
-    {
-        var defaults = new DebugSettings();
-        MouseSensitivity = defaults.MouseSensitivity;
-        WalkSpeed = defaults.WalkSpeed;
-        SprintMultiplier = defaults.SprintMultiplier;
-        JumpSpeed = defaults.JumpSpeed;
-        Gravity = defaults.Gravity;
-        BuildReach = defaults.BuildReach;
-    }
 }

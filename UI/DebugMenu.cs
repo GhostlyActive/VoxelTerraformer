@@ -23,6 +23,7 @@ public sealed class DebugMenu
     private readonly DebugSettings _settings;
     private readonly Entry[] _entries;
     private int _selected;
+    private float _resetFlashTimer;
 
     public bool IsOpen { get; private set; }
 
@@ -58,14 +59,18 @@ public sealed class DebugMenu
         if (Pressed(KeyboardKey.Down)) _selected = (_selected + 1) % rowCount;
         if (Pressed(KeyboardKey.Up)) _selected = (_selected - 1 + rowCount) % rowCount;
 
+        _resetFlashTimer = Math.Max(0f, _resetFlashTimer - Raylib.GetFrameTime());
+
         if (_selected == ResetAllRow)
         {
+            // Enter kann je nach Tastatur auch als Numpad-Enter ankommen
             bool trigger =
                 Raylib.IsKeyPressed(KeyboardKey.Enter) ||
+                Raylib.IsKeyPressed(KeyboardKey.KpEnter) ||
                 Pressed(KeyboardKey.Left) ||
                 Pressed(KeyboardKey.Right) ||
                 Raylib.IsKeyPressed(KeyboardKey.R);
-            if (trigger) _settings.ResetToDefaults();
+            if (trigger) ResetAll();
             return;
         }
 
@@ -79,6 +84,14 @@ public sealed class DebugMenu
         // R setzt nur den ausgewählten Wert zurück; für alles gibt es die "Reset all"-Zeile
         if (Raylib.IsKeyPressed(KeyboardKey.R))
             entry.Set(entry.Default);
+    }
+
+    // Über die Einträge selbst zurücksetzen — so wird garantiert alles erfasst, was im Menü steht
+    private void ResetAll()
+    {
+        foreach (Entry entry in _entries)
+            entry.Set(entry.Default);
+        _resetFlashTimer = 1.5f;
     }
 
     // Gedrückt halten wiederholt die Eingabe (Key-Repeat des Systems)
@@ -125,7 +138,14 @@ public sealed class DebugMenu
         if (resetSelected)
             Raylib.DrawRectangle(x + 6, resetRowY - 3, width - 12, rowHeight - 2, new Color(255, 150, 90, 45));
 
-        Color resetColor = resetSelected ? new Color(255, 190, 140, 255) : new Color(220, 160, 120, 255);
-        Raylib.DrawText("Reset ALL to defaults (Enter)", x + 16, resetRowY, 20, resetColor);
+        if (_resetFlashTimer > 0f)
+        {
+            Raylib.DrawText("All values reset!", x + 16, resetRowY, 20, new Color(140, 240, 160, 255));
+        }
+        else
+        {
+            Color resetColor = resetSelected ? new Color(255, 190, 140, 255) : new Color(220, 160, 120, 255);
+            Raylib.DrawText("Reset ALL to defaults (Enter/R)", x + 16, resetRowY, 20, resetColor);
+        }
     }
 }
