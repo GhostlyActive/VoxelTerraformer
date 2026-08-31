@@ -42,6 +42,7 @@ public sealed class DebugMenu
             new Entry("Jump power", () => settings.JumpSpeed, v => settings.JumpSpeed = v, defaults.JumpSpeed, 0.5f, 2f, 30f, "0.0"),
             new Entry("Gravity", () => settings.Gravity, v => settings.Gravity = v, defaults.Gravity, 1f, 2f, 60f, "0"),
             new Entry("Build reach", () => settings.BuildReach, v => settings.BuildReach = v, defaults.BuildReach, 1f, 2f, 60f, "0"),
+            new Entry("Sculpt radius", () => settings.SculptRadius, v => settings.SculptRadius = v, defaults.SculptRadius, 0.1f, 0.25f, 2.5f, "0.0"),
         };
     }
 

@@ -19,7 +19,7 @@ public sealed class ChunkMeshManager : IDisposable
         public bool HasMesh;
     }
 
-    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, int WorldX, int WorldZ);
+    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, ulong> Refinements, int WorldX, int WorldZ);
     private readonly record struct MeshResult(ChunkCoord Coord, ChunkMeshData Data);
 
     private readonly VoxelWorld _world;
@@ -63,7 +63,8 @@ public sealed class ChunkMeshManager : IDisposable
         {
             byte[] padded = RentSnapshot(chunk);
             ChunkMeshData data = ChunkMesher.Build(
-                padded, VoxelWorld.WorldHeight, (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z);
+                padded, SnapshotRefinements(chunk), VoxelWorld.WorldHeight,
+                (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z);
             ArrayPool<byte>.Shared.Return(padded);
             Upload(chunk.Coord, data);
         }
@@ -94,7 +95,8 @@ public sealed class ChunkMeshManager : IDisposable
 
             _inFlight.Add(coord);
             _jobs.Add(new MeshJob(
-                coord, RentSnapshot(chunk), (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z));
+                coord, RentSnapshot(chunk), SnapshotRefinements(chunk),
+                (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z));
         }
     }
 
@@ -102,7 +104,7 @@ public sealed class ChunkMeshManager : IDisposable
     {
         foreach (MeshJob job in _jobs.GetConsumingEnumerable())
         {
-            ChunkMeshData data = ChunkMesher.Build(job.Padded, VoxelWorld.WorldHeight, job.WorldX, job.WorldZ);
+            ChunkMeshData data = ChunkMesher.Build(job.Padded, job.Refinements, VoxelWorld.WorldHeight, job.WorldX, job.WorldZ);
             ArrayPool<byte>.Shared.Return(job.Padded);
             _results.Enqueue(new MeshResult(job.Coord, data));
         }
@@ -136,6 +138,39 @@ public sealed class ChunkMeshManager : IDisposable
         }
 
         return padded;
+    }
+
+    // Sub-Voxel-Masken des Chunks (auf Padded-Indizes umgeschlüsselt) plus die der
+    // direkt angrenzenden Nachbarblöcke — fürs Sub-Culling an den Chunk-Grenzen
+    private Dictionary<int, ulong> SnapshotRefinements(Chunk chunk)
+    {
+        var refinements = new Dictionary<int, ulong>();
+
+        foreach ((int index, ulong mask) in chunk.Refinements)
+        {
+            (int x, int y, int z) = Chunk.DecodeIndex(index);
+            refinements[ChunkMesher.Index(x, y, z)] = mask;
+        }
+
+        int baseX = (int)chunk.WorldPosition.X;
+        int baseZ = (int)chunk.WorldPosition.Z;
+
+        for (int y = 0; y < VoxelWorld.WorldHeight; y++)
+        for (int i = 0; i < Chunk.Size; i++)
+        {
+            AddBorderRefinement(refinements, baseX - 1, y, baseZ + i, -1, y, i);
+            AddBorderRefinement(refinements, baseX + Chunk.Size, y, baseZ + i, Chunk.Size, y, i);
+            AddBorderRefinement(refinements, baseX + i, y, baseZ - 1, i, y, -1);
+            AddBorderRefinement(refinements, baseX + i, y, baseZ + Chunk.Size, i, y, Chunk.Size);
+        }
+
+        return refinements;
+    }
+
+    private void AddBorderRefinement(Dictionary<int, ulong> refinements, int wx, int wy, int wz, int lx, int ly, int lz)
+    {
+        if (_world.TryGetRefinement(wx, wy, wz, out ulong mask))
+            refinements[ChunkMesher.Index(lx, ly, lz)] = mask;
     }
 
     private void Upload(ChunkCoord coord, ChunkMeshData data)

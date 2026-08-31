@@ -17,6 +17,9 @@ public sealed class DebugSettings
     /// <summary>Reichweite für Abbauen und Bauen; ohne Treffer entsteht der Block frei in der Luft auf dieser Distanz</summary>
     public float BuildReach { get; set; } = 8f;
 
+    /// <summary>Kugelradius des Sculpt-Brushes (Taste V, Ctrl+Mausrad)</summary>
+    public float SculptRadius { get; set; } = 0.7f;
+
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Terraformer", "debug-settings.json");

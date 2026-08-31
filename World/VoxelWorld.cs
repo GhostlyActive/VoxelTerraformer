@@ -35,6 +35,16 @@ public class VoxelWorld
     private VoxelRaycast.Vector3Int _ghostCell;
     private Vector3 _ghostCenter;
 
+    // Sculpt-Modus: Kugel-Brush auf Sub-Voxel-Ebene, halten = kontinuierlich bohren/auftragen
+    private const float SculptInterval = 0.05f;
+    private bool _hasSculptTarget;
+    private Vector3 _sculptTarget;
+    private float _sculptCooldown;
+    private float _sculptRadiusForDraw;
+
+    /// <summary>Umschaltbar per Taste V: Block-Modus vs. Feinverformung</summary>
+    public bool SculptMode { get; set; }
+
     /// <summary>Chunk braucht ein neues Mesh (feuert bei Kanten-Edits auch für Nachbarn)</summary>
     public event Action<ChunkCoord>? ChunkDirty;
 
@@ -113,12 +123,12 @@ public class VoxelWorld
         foreach ((ChunkCoord coord, Chunk chunk) in _chunks)
         {
             if (!chunk.Modified) continue;
-            _storage.Save(coord, chunk.RawBlocks);
+            _storage.Save(coord, chunk.RawBlocks, chunk.Refinements);
             chunk.MarkSaved();
         }
 
         foreach ((ChunkCoord coord, Chunk chunk) in _keptModified)
-            _storage.Save(coord, chunk.RawBlocks);
+            _storage.Save(coord, chunk.RawBlocks, chunk.Refinements);
         _keptModified.Clear();
 
         _diskIsBase = true;
@@ -149,9 +159,9 @@ public class VoxelWorld
         {
             chunk = kept;
         }
-        else if (_diskIsBase && _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks))
+        else if (_diskIsBase && _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks, out Dictionary<int, ulong>? refinements))
         {
-            chunk = new Chunk(coord, WorldHeight, blocks);
+            chunk = new Chunk(coord, WorldHeight, blocks, refinements);
         }
         else
         {
@@ -191,8 +201,18 @@ public class VoxelWorld
         return offsets.ToArray();
     }
 
-    public void Update(Camera3D camera, BoundingBox playerBounds, float buildReach)
+    public void Update(Camera3D camera, BoundingBox playerBounds, float buildReach, float sculptRadius)
     {
+        if (SculptMode)
+        {
+            _hasHover = false;
+            _hasGhost = false;
+            UpdateSculpt(camera, playerBounds, buildReach, sculptRadius);
+            return;
+        }
+
+        _hasSculptTarget = false;
+
         // Inputs: Mouse + keyboard fallback
         bool remove = Raylib.IsMouseButtonPressed(MouseButton.Left) || Raylib.IsKeyPressed(KeyboardKey.O);
         bool place  = Raylib.IsMouseButtonPressed(MouseButton.Right) || Raylib.IsKeyPressed(KeyboardKey.P);
@@ -206,10 +226,135 @@ public class VoxelWorld
 
     public void DrawHover()
     {
-        if (_hasHover)
+        if (_hasSculptTarget)
+            Raylib.DrawSphereWires(_sculptTarget, _sculptRadiusForDraw, 10, 10, new Color(95, 225, 235, 170));
+        else if (_hasHover)
             Raylib.DrawCubeWires(_hoverCenter, 1.02f, 1.02f, 1.02f, Color.Yellow);
         else if (_hasGhost)
             Raylib.DrawCubeWires(_ghostCenter, 1f, 1f, 1f, new Color(95, 225, 235, 220));
+    }
+
+    // --- Sculpt-Modus ---
+
+    private void UpdateSculpt(Camera3D camera, BoundingBox playerBounds, float buildReach, float sculptRadius)
+    {
+        _sculptRadiusForDraw = sculptRadius;
+        _hasSculptTarget = false;
+
+        Ray ray = Raylib.GetScreenToWorldRay(
+            new Vector2(Raylib.GetScreenWidth() / 2, Raylib.GetScreenHeight() / 2),
+            camera
+        );
+
+        // Raycast auf Sub-Voxel-Auflösung (Koordinaten x4) — trifft auch durch gebohrte Löcher korrekt
+        var hit = VoxelRaycast.Cast(
+            GetSubVoxel,
+            ray.Position * SubVoxels.Divisions,
+            ray.Direction,
+            buildReach * SubVoxels.Divisions);
+
+        if (hit.HasHit)
+        {
+            _sculptTarget = new Vector3(
+                (hit.Block.X + 0.5f) * SubVoxels.CellSize,
+                (hit.Block.Y + 0.5f) * SubVoxels.CellSize,
+                (hit.Block.Z + 0.5f) * SubVoxels.CellSize);
+        }
+        else
+        {
+            // nichts getroffen → frei in der Luft am Ende der Reichweite formen
+            _sculptTarget = ray.Position + Vector3.Normalize(ray.Direction) * buildReach;
+        }
+        _hasSculptTarget = true;
+
+        _sculptCooldown -= Raylib.GetFrameTime();
+
+        bool carve = Raylib.IsMouseButtonDown(MouseButton.Left);
+        bool build = Raylib.IsMouseButtonDown(MouseButton.Right);
+        if ((!carve && !build) || _sculptCooldown > 0f) return;
+
+        // Bei beiden Tasten gewinnt das Bohren
+        SculptSphere(_sculptTarget, sculptRadius, add: !carve && build, BlockRegistry.Stone, playerBounds);
+        _sculptCooldown = SculptInterval;
+    }
+
+    /// <summary>Kugel aus Sub-Voxeln entfernen (add=false) bzw. auftragen (add=true)</summary>
+    public void SculptSphere(Vector3 center, float radius, bool add, byte blockId, BoundingBox playerBounds)
+    {
+        float radiusSquared = radius * radius;
+
+        int minBlockX = (int)MathF.Floor(center.X - radius);
+        int maxBlockX = (int)MathF.Floor(center.X + radius);
+        int minBlockY = Math.Max(0, (int)MathF.Floor(center.Y - radius));
+        int maxBlockY = Math.Min(WorldHeight - 1, (int)MathF.Floor(center.Y + radius));
+        int minBlockZ = (int)MathF.Floor(center.Z - radius);
+        int maxBlockZ = (int)MathF.Floor(center.Z + radius);
+
+        for (int by = minBlockY; by <= maxBlockY; by++)
+        for (int bz = minBlockZ; bz <= maxBlockZ; bz++)
+        for (int bx = minBlockX; bx <= maxBlockX; bx++)
+        {
+            var (cc, lx, lz) = WorldToChunk(bx, bz);
+            if (!_chunks.TryGetValue(cc, out var chunk)) continue;
+
+            int id = chunk.GetLocal(lx, by, lz, WorldHeight);
+            bool solid = BlockRegistry.IsSolid(id);
+            if (!add && !solid) continue; // Luft lässt sich nicht weiter aushöhlen
+
+            ulong mask = solid
+                ? (chunk.TryGetRefinement(lx, by, lz, WorldHeight, out ulong existing) ? existing : ulong.MaxValue)
+                : 0UL;
+
+            ulong newMask = mask;
+
+            for (int sz = 0; sz < SubVoxels.Divisions; sz++)
+            for (int sy = 0; sy < SubVoxels.Divisions; sy++)
+            for (int sx = 0; sx < SubVoxels.Divisions; sx++)
+            {
+                var subCenter = new Vector3(
+                    bx + (sx + 0.5f) * SubVoxels.CellSize,
+                    by + (sy + 0.5f) * SubVoxels.CellSize,
+                    bz + (sz + 0.5f) * SubVoxels.CellSize);
+
+                if (Vector3.DistanceSquared(subCenter, center) > radiusSquared) continue;
+                if (add && SubIntersectsBox(playerBounds, bx, by, bz, sx, sy, sz)) continue; // nicht in den Spieler bauen
+
+                ulong bit = 1UL << SubVoxels.BitIndex(sx, sy, sz);
+                if (add) newMask |= bit;
+                else newMask &= ~bit;
+            }
+
+            if (newMask == mask) continue;
+
+            if (!solid)
+            {
+                // Luft bekommt Substanz → Block anlegen (SetLocal räumt alte Details mit weg)
+                chunk.SetLocal(lx, by, lz, blockId, WorldHeight);
+                if (newMask != ulong.MaxValue)
+                    chunk.SetRefinement(lx, by, lz, newMask, WorldHeight);
+            }
+            else if (newMask == 0)
+            {
+                chunk.SetLocal(lx, by, lz, BlockRegistry.Air, WorldHeight); // komplett weggeschnitzt
+            }
+            else
+            {
+                chunk.SetRefinement(lx, by, lz, newMask, WorldHeight); // volle Maske entfernt den Eintrag selbst
+            }
+
+            FireDirtyAround(cc, lx, lz);
+        }
+    }
+
+    private static bool SubIntersectsBox(BoundingBox box, int bx, int by, int bz, int sx, int sy, int sz)
+    {
+        float minX = bx + sx * SubVoxels.CellSize;
+        float minY = by + sy * SubVoxels.CellSize;
+        float minZ = bz + sz * SubVoxels.CellSize;
+
+        return box.Min.X < minX + SubVoxels.CellSize && box.Max.X > minX &&
+               box.Min.Y < minY + SubVoxels.CellSize && box.Max.Y > minY &&
+               box.Min.Z < minZ + SubVoxels.CellSize && box.Max.Z > minZ;
     }
 
     // --- Interaction ---
@@ -293,6 +438,34 @@ public class VoxelWorld
         if (!_chunks.TryGetValue(cc, out var chunk)) return 0;
 
         return chunk.GetLocal(lx, wy, lz, WorldHeight);
+    }
+
+    public bool TryGetRefinement(int wx, int wy, int wz, out ulong mask)
+    {
+        mask = 0;
+        if (wy < 0 || wy >= WorldHeight) return false;
+
+        var (cc, lx, lz) = WorldToChunk(wx, wz);
+        if (!_chunks.TryGetValue(cc, out var chunk)) return false;
+
+        return chunk.TryGetRefinement(lx, wy, lz, WorldHeight, out mask);
+    }
+
+    /// <summary>Blocktyp der Sub-Zelle (Welt-Sub-Koordinaten, 4 pro Block), 0 = Luft</summary>
+    public int GetSubVoxel(int swx, int swy, int swz)
+    {
+        // >> 2 und & 3 entsprechen FloorDiv/Modulo für die Zweierpotenz 4 (auch für negative Werte)
+        int wx = swx >> 2;
+        int wy = swy >> 2;
+        int wz = swz >> 2;
+
+        if (wy < 0 || wy >= WorldHeight) return 0;
+
+        int id = GetBlock(wx, wy, wz);
+        if (!BlockRegistry.IsSolid(id)) return 0;
+
+        if (!TryGetRefinement(wx, wy, wz, out ulong mask)) return id; // Vollblock
+        return SubVoxels.HasBit(mask, swx & 3, swy & 3, swz & 3) ? id : 0;
     }
 
     public void SetBlock(int wx, int wy, int wz, int id)

@@ -10,7 +10,7 @@ namespace Terraformer.World;
 /// </summary>
 public sealed class WorldStorage
 {
-    private const byte FormatVersion = 1;
+    private const byte FormatVersion = 2; // v2: Blöcke + Sub-Voxel-Masken (Sculpt)
 
     private sealed class WorldMeta
     {
@@ -87,9 +87,10 @@ public sealed class WorldStorage
         }
     }
 
-    public bool TryLoad(ChunkCoord coord, int expectedLength, out byte[]? blocks)
+    public bool TryLoad(ChunkCoord coord, int expectedLength, out byte[]? blocks, out Dictionary<int, ulong>? refinements)
     {
         blocks = null;
+        refinements = null;
 
         try
         {
@@ -100,21 +101,36 @@ public sealed class WorldStorage
             if (file.ReadByte() != FormatVersion) return false;
 
             using var inflate = new DeflateStream(file, CompressionMode.Decompress);
-            var data = new byte[expectedLength];
-            inflate.ReadExactly(data);
+            using var reader = new BinaryReader(inflate);
+
+            byte[] data = reader.ReadBytes(expectedLength);
+            if (data.Length != expectedLength) return false;
+
+            int count = reader.ReadInt32();
+            if (count < 0 || count > expectedLength) return false; // offensichtlich kaputt
+
+            var loadedRefinements = new Dictionary<int, ulong>(count);
+            for (int i = 0; i < count; i++)
+            {
+                int index = reader.ReadInt32();
+                ulong mask = reader.ReadUInt64();
+                loadedRefinements[index] = mask;
+            }
 
             blocks = data;
+            refinements = loadedRefinements;
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or EndOfStreamException)
         {
             // Unlesbare Datei → Chunk wird frisch generiert statt zu crashen
             blocks = null;
+            refinements = null;
             return false;
         }
     }
 
-    public void Save(ChunkCoord coord, byte[] blocks)
+    public void Save(ChunkCoord coord, byte[] blocks, IReadOnlyDictionary<int, ulong> refinements)
     {
         try
         {
@@ -124,7 +140,15 @@ public sealed class WorldStorage
             file.WriteByte(FormatVersion);
 
             using var deflate = new DeflateStream(file, CompressionLevel.Fastest);
-            deflate.Write(blocks);
+            using var writer = new BinaryWriter(deflate);
+
+            writer.Write(blocks);
+            writer.Write(refinements.Count);
+            foreach ((int index, ulong mask) in refinements)
+            {
+                writer.Write(index);
+                writer.Write(mask);
+            }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

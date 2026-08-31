@@ -181,26 +181,17 @@ public class PlayerController
 
     /// <summary>
     /// axis: 0=x, 1=y, 2=z
-    /// Push player out of solid blocks and zero that velocity axis.
+    /// Push player out of solid geometry and zero that velocity axis.
+    /// Angeschnitzte Blöcke (Sculpt) kollidieren auf Sub-Voxel-Ebene.
     /// </summary>
     private void ResolveCollisions(VoxelWorld world, ref Vector3 pos, ref Vector3 vel, int axis)
     {
-        // Player AABB in world space
-        float minX = pos.X - HalfWidth;
-        float maxX = pos.X + HalfWidth;
-        float minY = pos.Y;
-        float maxY = pos.Y + Height;
-        float minZ = pos.Z - HalfWidth;
-        float maxZ = pos.Z + HalfWidth;
-
-        int ix0 = (int)MathF.Floor(minX);
-        int ix1 = (int)MathF.Floor(maxX);
-        int iy0 = (int)MathF.Floor(minY);
-        int iy1 = (int)MathF.Floor(maxY);
-        int iz0 = (int)MathF.Floor(minZ);
-        int iz1 = (int)MathF.Floor(maxZ);
-
-        bool hit = false;
+        int ix0 = (int)MathF.Floor(pos.X - HalfWidth);
+        int ix1 = (int)MathF.Floor(pos.X + HalfWidth);
+        int iy0 = (int)MathF.Floor(pos.Y);
+        int iy1 = (int)MathF.Floor(pos.Y + Height);
+        int iz0 = (int)MathF.Floor(pos.Z - HalfWidth);
+        int iz1 = (int)MathF.Floor(pos.Z + HalfWidth);
 
         for (int x = ix0; x <= ix1; x++)
         for (int y = iy0; y <= iy1; y++)
@@ -208,47 +199,60 @@ public class PlayerController
         {
             if (!BlockRegistry.IsSolid(world.GetBlock(x, y, z))) continue;
 
-            // Block AABB: [x,x+1] etc.
-            float bMinX = x, bMaxX = x + 1f;
-            float bMinY = y, bMaxY = y + 1f;
-            float bMinZ = z, bMaxZ = z + 1f;
-
-            // Overlap?
-            if (maxX <= bMinX || minX >= bMaxX ||
-                maxY <= bMinY || minY >= bMaxY ||
-                maxZ <= bMinZ || minZ >= bMaxZ)
-                continue;
-
-            hit = true;
-
-            // push out on the moved axis only
-            if (axis == 0)
+            if (world.TryGetRefinement(x, y, z, out ulong mask))
             {
-                if (vel.X > 0f) pos.X = bMinX - HalfWidth - 0.0001f;
-                else if (vel.X < 0f) pos.X = bMaxX + HalfWidth + 0.0001f;
-                vel.X = 0f;
+                const float cell = SubVoxels.CellSize;
+                for (int sz = 0; sz < SubVoxels.Divisions; sz++)
+                for (int sy = 0; sy < SubVoxels.Divisions; sy++)
+                for (int sx = 0; sx < SubVoxels.Divisions; sx++)
+                {
+                    if (!SubVoxels.HasBit(mask, sx, sy, sz)) continue;
+                    ResolveBox(ref pos, ref vel, axis, x + sx * cell, y + sy * cell, z + sz * cell, cell);
+                }
             }
-            else if (axis == 2)
+            else
             {
-                if (vel.Z > 0f) pos.Z = bMinZ - HalfWidth - 0.0001f;
-                else if (vel.Z < 0f) pos.Z = bMaxZ + HalfWidth + 0.0001f;
-                vel.Z = 0f;
+                ResolveBox(ref pos, ref vel, axis, x, y, z, 1f);
             }
-            else // Y
-            {
-                if (vel.Y > 0f) pos.Y = bMinY - Height - 0.0001f;
-                else if (vel.Y < 0f) pos.Y = bMaxY + 0.0001f;
-                vel.Y = 0f;
-            }
-
-            // update AABB after correction for further checks
-            minX = pos.X - HalfWidth; maxX = pos.X + HalfWidth;
-            minY = pos.Y;            maxY = pos.Y + Height;
-            minZ = pos.Z - HalfWidth; maxZ = pos.Z + HalfWidth;
         }
+    }
 
-        // (Optional) If we get stuck due to weird overlaps, you could iterate a few times,
-        // but for voxel worlds axis separation is usually enough.
-        _ = hit;
+    // Schiebt den Spieler aus einer soliden Box heraus — nur auf der bewegten Achse
+    private void ResolveBox(ref Vector3 pos, ref Vector3 vel, int axis, float bMinX, float bMinY, float bMinZ, float size)
+    {
+        float bMaxX = bMinX + size;
+        float bMaxY = bMinY + size;
+        float bMaxZ = bMinZ + size;
+
+        float minX = pos.X - HalfWidth;
+        float maxX = pos.X + HalfWidth;
+        float minY = pos.Y;
+        float maxY = pos.Y + Height;
+        float minZ = pos.Z - HalfWidth;
+        float maxZ = pos.Z + HalfWidth;
+
+        if (maxX <= bMinX || minX >= bMaxX ||
+            maxY <= bMinY || minY >= bMaxY ||
+            maxZ <= bMinZ || minZ >= bMaxZ)
+            return;
+
+        if (axis == 0)
+        {
+            if (vel.X > 0f) pos.X = bMinX - HalfWidth - 0.0001f;
+            else if (vel.X < 0f) pos.X = bMaxX + HalfWidth + 0.0001f;
+            vel.X = 0f;
+        }
+        else if (axis == 2)
+        {
+            if (vel.Z > 0f) pos.Z = bMinZ - HalfWidth - 0.0001f;
+            else if (vel.Z < 0f) pos.Z = bMaxZ + HalfWidth + 0.0001f;
+            vel.Z = 0f;
+        }
+        else // Y
+        {
+            if (vel.Y > 0f) pos.Y = bMinY - Height - 0.0001f;
+            else if (vel.Y < 0f) pos.Y = bMaxY + 0.0001f;
+            vel.Y = 0f;
+        }
     }
 }

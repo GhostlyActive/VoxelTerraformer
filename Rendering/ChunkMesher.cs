@@ -46,7 +46,7 @@ public static class ChunkMesher
     private static readonly int[] _quadOrder = { 0, 1, 2, 0, 2, 3 };
     private static readonly int[] _quadOrderFlipped = { 1, 2, 3, 1, 3, 0 };
 
-    public static ChunkMeshData Build(byte[] padded, int worldHeight, int worldX, int worldZ)
+    public static ChunkMeshData Build(byte[] padded, Dictionary<int, ulong> refinements, int worldHeight, int worldX, int worldZ)
     {
         var vertices = new List<float>(24576);
         var normals = new List<float>(24576);
@@ -59,22 +59,33 @@ public static class ChunkMesher
             int id = padded[Index(x, y, z)];
             if (!BlockRegistry.IsSolid(id)) continue;
 
-            bool exposed =
-                !BlockRegistry.IsSolid(padded[Index(x + 1, y, z)]) ||
-                !BlockRegistry.IsSolid(padded[Index(x - 1, y, z)]) ||
-                !BlockRegistry.IsSolid(padded[Index(x, y + 1, z)]) ||
-                !BlockRegistry.IsSolid(padded[Index(x, y - 1, z)]) ||
-                !BlockRegistry.IsSolid(padded[Index(x, y, z + 1)]) ||
-                !BlockRegistry.IsSolid(padded[Index(x, y, z - 1)]);
-            if (!exposed) continue;
+            bool refined = refinements.TryGetValue(Index(x, y, z), out ulong ownMask);
+
+            if (!refined)
+            {
+                bool exposed =
+                    !NeighborOccludes(padded, refinements, x + 1, y, z, 2) ||
+                    !NeighborOccludes(padded, refinements, x - 1, y, z, 3) ||
+                    !NeighborOccludes(padded, refinements, x, y + 1, z, 0) ||
+                    !NeighborOccludes(padded, refinements, x, y - 1, z, 1) ||
+                    !NeighborOccludes(padded, refinements, x, y, z + 1, 4) ||
+                    !NeighborOccludes(padded, refinements, x, y, z - 1, 5);
+                if (!exposed) continue;
+            }
 
             Color albedo = TerrainColors.ForBlock(id, worldX + x, y, worldZ + z);
             byte emissive = (byte)(Math.Clamp(BlockRegistry.Get(id).Emissive, 0f, 1f) * 255f);
 
+            if (refined)
+            {
+                EmitRefinedBlock(vertices, normals, colors, padded, refinements, x, y, z, ownMask, albedo, emissive);
+                continue;
+            }
+
             for (int f = 0; f < _faces.Length; f++)
             {
                 ref readonly FaceInfo face = ref _faces[f];
-                if (BlockRegistry.IsSolid(padded[Index(x + face.Nx, y + face.Ny, z + face.Nz)])) continue;
+                if (NeighborOccludes(padded, refinements, x + face.Nx, y + face.Ny, z + face.Nz, f)) continue;
 
                 EmitFace(vertices, normals, colors, padded, in face, x, y, z, albedo, emissive);
             }
@@ -87,6 +98,119 @@ public static class ChunkMesher
             Colors = colors.ToArray(),
             VertexCount = vertices.Count / 3,
         };
+    }
+
+    // Ein Nachbar verdeckt eine Fläche nur, wenn er solide ist UND seine zugewandte
+    // Sub-Voxel-Randschicht komplett gefüllt ist (Vollblöcke sind implizit voll)
+    private static bool NeighborOccludes(byte[] padded, Dictionary<int, ulong> refinements, int nx, int ny, int nz, int faceIndex)
+    {
+        int index = Index(nx, ny, nz);
+        if (!BlockRegistry.IsSolid(padded[index])) return false;
+        if (!refinements.TryGetValue(index, out ulong mask)) return true;
+
+        ulong layer = SubVoxels.FaceLayers[faceIndex ^ 1];
+        return (mask & layer) == layer;
+    }
+
+    private static void EmitRefinedBlock(
+        List<float> vertices,
+        List<float> normals,
+        List<byte> colors,
+        byte[] padded,
+        Dictionary<int, ulong> refinements,
+        int x, int y, int z,
+        ulong mask,
+        Color albedo,
+        byte emissive)
+    {
+        for (int sz = 0; sz < SubVoxels.Divisions; sz++)
+        for (int sy = 0; sy < SubVoxels.Divisions; sy++)
+        for (int sx = 0; sx < SubVoxels.Divisions; sx++)
+        {
+            if (!SubVoxels.HasBit(mask, sx, sy, sz)) continue;
+
+            for (int f = 0; f < _faces.Length; f++)
+            {
+                ref readonly FaceInfo face = ref _faces[f];
+
+                int nsx = sx + face.Nx;
+                int nsy = sy + face.Ny;
+                int nsz = sz + face.Nz;
+
+                bool occluded;
+                if (nsx >= 0 && nsx < SubVoxels.Divisions &&
+                    nsy >= 0 && nsy < SubVoxels.Divisions &&
+                    nsz >= 0 && nsz < SubVoxels.Divisions)
+                {
+                    occluded = SubVoxels.HasBit(mask, nsx, nsy, nsz);
+                }
+                else
+                {
+                    // Über die Blockgrenze: das zugewandte Sub-Voxel des Nachbarblocks prüfen
+                    int index = Index(x + face.Nx, y + face.Ny, z + face.Nz);
+                    if (!BlockRegistry.IsSolid(padded[index]))
+                    {
+                        occluded = false;
+                    }
+                    else if (!refinements.TryGetValue(index, out ulong neighborMask))
+                    {
+                        occluded = true; // Vollblock
+                    }
+                    else
+                    {
+                        occluded = SubVoxels.HasBit(
+                            neighborMask,
+                            (nsx + SubVoxels.Divisions) & 3,
+                            (nsy + SubVoxels.Divisions) & 3,
+                            (nsz + SubVoxels.Divisions) & 3);
+                    }
+                }
+
+                if (occluded) continue;
+
+                EmitSubFace(vertices, normals, colors, in face, x, y, z, sx, sy, sz, albedo, emissive);
+            }
+        }
+    }
+
+    private static void EmitSubFace(
+        List<float> vertices,
+        List<float> normals,
+        List<byte> colors,
+        in FaceInfo face,
+        int x, int y, int z,
+        int sx, int sy, int sz,
+        Color albedo,
+        byte emissive)
+    {
+        const float cell = SubVoxels.CellSize;
+        float originX = x + sx * cell;
+        float originY = y + sy * cell;
+        float originZ = z + sz * cell;
+
+        // Kein Sub-Voxel-AO — leicht abgedunkelt, damit Höhlungen nicht flach-hell wirken
+        float light = face.Shade * 0.92f;
+        byte r = (byte)(albedo.R * light);
+        byte g = (byte)(albedo.G * light);
+        byte b = (byte)(albedo.B * light);
+
+        for (int i = 0; i < _quadOrder.Length; i++)
+        {
+            (int cx, int cy, int cz) = face.Corners[_quadOrder[i]];
+
+            vertices.Add(originX + cx * cell);
+            vertices.Add(originY + cy * cell);
+            vertices.Add(originZ + cz * cell);
+
+            normals.Add(face.Nx);
+            normals.Add(face.Ny);
+            normals.Add(face.Nz);
+
+            colors.Add(r);
+            colors.Add(g);
+            colors.Add(b);
+            colors.Add(emissive);
+        }
     }
 
     private static void EmitFace(

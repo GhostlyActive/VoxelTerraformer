@@ -144,13 +144,21 @@ public static class Program
                 // Day/Night Update (Speed: Z/U)
                 dayNight.Update(dt);
 
-                // Bau-Reichweite mit dem Mausrad einstellen (gilt für Abbauen, Bauen und Hover)
+                // V wechselt zwischen Block-Modus und Sculpt-Modus (Feinverformung)
+                if (Raylib.IsKeyPressed(KeyboardKey.V)) world.SculptMode = !world.SculptMode;
+
+                // Mausrad: Bau-Reichweite | Ctrl+Mausrad: Sculpt-Brushgröße
                 float wheel = Raylib.GetMouseWheelMove();
                 if (wheel != 0f)
-                    settings.BuildReach = Math.Clamp(settings.BuildReach + wheel, 2f, 60f);
+                {
+                    if (Raylib.IsKeyDown(KeyboardKey.LeftControl))
+                        settings.SculptRadius = Math.Clamp(settings.SculptRadius + wheel * 0.1f, 0.25f, 2.5f);
+                    else
+                        settings.BuildReach = Math.Clamp(settings.BuildReach + wheel, 2f, 60f);
+                }
 
                 // Welt-Interaktion
-                world.Update(camera, player.Bounds, settings.BuildReach);
+                world.Update(camera, player.Bounds, settings.BuildReach, settings.SculptRadius);
 
                 // Partikel laufen über den unbeleuchteten Default-Shader → Weltlicht beim Spawn einbacken
                 Vector3 light = dayNight.AmbientColor + dayNight.SunlightColor * 0.8f;
@@ -193,8 +201,8 @@ public static class Program
 
             // UI
             Raylib.DrawFPS(10, 10);
-            Raylib.DrawText("WASD move | Shift sprint | Space jump | LMB remove | RMB place", 10, 40, 20, Color.Black);
-            Raylib.DrawText("Wheel: build reach | Z/U day speed | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
+            Raylib.DrawText("WASD move | Shift sprint | Space jump | LMB remove | RMB place | V sculpt", 10, 40, 20, Color.Black);
+            Raylib.DrawText("Wheel: reach | Ctrl+Wheel: brush | Z/U day | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
             if (debugOverlay)
@@ -213,8 +221,10 @@ public static class Program
             int cy = Raylib.GetScreenHeight() / 2;
             Raylib.DrawCircle(cx, cy, 4, Color.Black);
 
-            // Aktuelle Bau-Reichweite unten mittig
-            string reachLabel = $"Reach: {settings.BuildReach:0}";
+            // Aktueller Modus + Bau-Reichweite unten mittig
+            string reachLabel = world.SculptMode
+                ? $"Sculpt r={settings.SculptRadius:0.0} | Reach {settings.BuildReach:0}"
+                : $"Reach: {settings.BuildReach:0}";
             int reachWidth = Raylib.MeasureText(reachLabel, 16);
             int reachY = Raylib.GetScreenHeight() - 40;
             Raylib.DrawText(reachLabel, cx - reachWidth / 2 + 1, reachY + 1, 16, new Color(10, 15, 25, 200));
