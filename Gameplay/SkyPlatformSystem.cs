@@ -46,9 +46,9 @@ public sealed class SkyPlatformSystem
 
     public string ModeLabel => Mode switch
     {
-        PlatformMode.Single => "Einzel",
-        PlatformMode.Pad => "Platte 3x3",
-        _ => "Steg",
+        PlatformMode.Single => "Single",
+        PlatformMode.Pad => "Pad 3x3",
+        _ => "Bridge",
     };
 
     /// <summary>Plattform erschienen: Zentrum + Farbe (für Partikel)</summary>

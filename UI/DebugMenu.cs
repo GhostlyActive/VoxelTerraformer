@@ -30,13 +30,13 @@ public sealed class DebugMenu
         _settings = settings;
         _entries = new[]
         {
-            new Entry("Maus-Empfindlichkeit", () => settings.MouseSensitivity, v => settings.MouseSensitivity = v, 0.01f, 0.02f, 0.50f, "0.00"),
-            new Entry("Laufgeschwindigkeit", () => settings.WalkSpeed, v => settings.WalkSpeed = v, 0.5f, 1f, 30f, "0.0"),
-            new Entry("Sprint-Faktor", () => settings.SprintMultiplier, v => settings.SprintMultiplier = v, 0.1f, 1f, 4f, "0.0"),
-            new Entry("Sprungkraft", () => settings.JumpSpeed, v => settings.JumpSpeed = v, 0.5f, 2f, 30f, "0.0"),
-            new Entry("Gravitation", () => settings.Gravity, v => settings.Gravity = v, 1f, 2f, 60f, "0"),
-            new Entry("Plattform-Dauer (s)", () => settings.PlatformLifetime, v => settings.PlatformLifetime = v, 0.5f, 0.5f, 30f, "0.0"),
-            new Entry("Plattform-Ladungen", () => settings.PlatformCharges, v => settings.PlatformCharges = (int)MathF.Round(v), 1f, 1f, 9f, "0"),
+            new Entry("Mouse sensitivity", () => settings.MouseSensitivity, v => settings.MouseSensitivity = v, 0.01f, 0.02f, 0.50f, "0.00"),
+            new Entry("Walk speed", () => settings.WalkSpeed, v => settings.WalkSpeed = v, 0.5f, 1f, 30f, "0.0"),
+            new Entry("Sprint multiplier", () => settings.SprintMultiplier, v => settings.SprintMultiplier = v, 0.1f, 1f, 4f, "0.0"),
+            new Entry("Jump power", () => settings.JumpSpeed, v => settings.JumpSpeed = v, 0.5f, 2f, 30f, "0.0"),
+            new Entry("Gravity", () => settings.Gravity, v => settings.Gravity = v, 1f, 2f, 60f, "0"),
+            new Entry("Platform lifetime (s)", () => settings.PlatformLifetime, v => settings.PlatformLifetime = v, 0.5f, 0.5f, 30f, "0.0"),
+            new Entry("Platform charges", () => settings.PlatformCharges, v => settings.PlatformCharges = (int)MathF.Round(v), 1f, 1f, 9f, "0"),
         };
     }
 
@@ -81,8 +81,8 @@ public sealed class DebugMenu
         Raylib.DrawRectangle(x, y, width, height, new Color(10, 14, 22, 205));
         Raylib.DrawRectangleLines(x, y, width, height, new Color(95, 225, 235, 200));
 
-        Raylib.DrawText("DEBUG-TUNING", x + 12, y + 10, 20, new Color(95, 225, 235, 255));
-        Raylib.DrawText("Pfeile: navigieren + einstellen | R: Reset | M: speichern", x + 12, y + 34, 14, new Color(180, 190, 200, 255));
+        Raylib.DrawText("DEBUG TUNING", x + 12, y + 10, 20, new Color(95, 225, 235, 255));
+        Raylib.DrawText("Arrows: navigate + adjust | R: reset | M: save", x + 12, y + 34, 14, new Color(180, 190, 200, 255));
 
         for (int i = 0; i < _entries.Length; i++)
         {
