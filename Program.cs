@@ -153,8 +153,12 @@ public static class Program
                 // Day/Night Update (Speed: Z/U)
                 dayNight.Update(dt);
 
-                // V wechselt zwischen Block-Modus und Sculpt-Modus (Feinverformung)
-                if (Raylib.IsKeyPressed(KeyboardKey.V)) world.SculptMode = !world.SculptMode;
+                // V zykliert durch die drei Voxel-Stufen
+                if (Raylib.IsKeyPressed(KeyboardKey.V))
+                {
+                    world.Mode = (TerrainMode)(((int)world.Mode + 1) % 3);
+                    meshManager.SetSmoothRendering(world.Mode == TerrainMode.Smooth);
+                }
 
                 // Mausrad: Bau-Reichweite | Ctrl+Mausrad: Sculpt-Brushgröße
                 float wheel = Raylib.GetMouseWheelMove();
@@ -210,7 +214,7 @@ public static class Program
 
             // UI
             Raylib.DrawFPS(10, 10);
-            Raylib.DrawText("WASD move | Shift sprint | Space jump | LMB remove | RMB place | V sculpt", 10, 40, 20, Color.Black);
+            Raylib.DrawText("WASD move | Shift sprint | Space jump | LMB remove | RMB place | V mode", 10, 40, 20, Color.Black);
             Raylib.DrawText("Wheel: reach | Ctrl+Wheel: brush | Z/U day | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
@@ -231,9 +235,12 @@ public static class Program
             Raylib.DrawCircle(cx, cy, 4, Color.Black);
 
             // Aktueller Modus + Bau-Reichweite unten mittig
-            string reachLabel = world.SculptMode
-                ? $"Sculpt r={settings.SculptRadius:0.0} | Reach {settings.BuildReach:0}"
-                : $"Reach: {settings.BuildReach:0}";
+            string reachLabel = world.Mode switch
+            {
+                TerrainMode.Blocks => $"Blocks | Reach {settings.BuildReach:0}",
+                TerrainMode.Sculpt => $"Sculpt r={settings.SculptRadius:0.0} | Reach {settings.BuildReach:0}",
+                _ => $"Smooth r={settings.SculptRadius:0.0} | Reach {settings.BuildReach:0}",
+            };
             int reachWidth = Raylib.MeasureText(reachLabel, 16);
             int reachY = Raylib.GetScreenHeight() - 40;
             Raylib.DrawText(reachLabel, cx - reachWidth / 2 + 1, reachY + 1, 16, new Color(10, 15, 25, 200));

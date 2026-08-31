@@ -42,8 +42,11 @@ public class VoxelWorld
     private float _sculptCooldown;
     private float _sculptRadiusForDraw;
 
-    /// <summary>Umschaltbar per Taste V: Block-Modus vs. Feinverformung</summary>
-    public bool SculptMode { get; set; }
+    /// <summary>Umschaltbar per Taste V — siehe <see cref="TerrainMode"/></summary>
+    public TerrainMode Mode { get; set; } = TerrainMode.Blocks;
+
+    /// <summary>Beide Feinmodi benutzen denselben Kugel-Brush, nur die Darstellung unterscheidet sich</summary>
+    public bool UsesSculptTool => Mode != TerrainMode.Blocks;
 
     /// <summary>Chunk braucht ein neues Mesh (feuert bei Kanten-Edits auch für Nachbarn)</summary>
     public event Action<ChunkCoord>? ChunkDirty;
@@ -212,7 +215,7 @@ public class VoxelWorld
 
     public void Update(Camera3D camera, BoundingBox playerBounds, float buildReach, float sculptRadius)
     {
-        if (SculptMode)
+        if (UsesSculptTool)
         {
             _hasHover = false;
             _hasGhost = false;

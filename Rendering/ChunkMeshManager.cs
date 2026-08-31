@@ -19,8 +19,8 @@ public sealed class ChunkMeshManager : IDisposable
         public bool HasMesh;
     }
 
-    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, ulong[]> Refinements, int WorldX, int WorldZ, int Generation);
-    private readonly record struct MeshResult(ChunkCoord Coord, ChunkMeshData Data, int Generation);
+    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, ulong[]> Refinements, int WorldX, int WorldZ, int Generation, bool Smooth);
+    private readonly record struct MeshResult(ChunkCoord Coord, ChunkMeshData Data, int Generation, bool Smooth);
 
     private readonly VoxelWorld _world;
     private readonly Dictionary<ChunkCoord, Entry> _entries = new();
@@ -34,7 +34,10 @@ public sealed class ChunkMeshManager : IDisposable
 
     private readonly BlockingCollection<MeshJob> _jobs = new();
     private readonly ConcurrentQueue<MeshResult> _results = new();
-    private readonly Thread _worker;
+    private readonly Thread[] _workers;
+
+    /// <summary>Marching-Cubes-Darstellung statt kantiger Würfel (Smooth-Modus)</summary>
+    public bool SmoothRendering { get; private set; }
 
     public int VisibleChunks { get; private set; }
     public int MeshedChunks => _entries.Count;
@@ -47,8 +50,25 @@ public sealed class ChunkMeshManager : IDisposable
         _world.ChunkDirty += coord => _dirty.Add(coord);
         _world.ChunkUnloaded += OnChunkUnloaded;
 
-        _worker = new Thread(WorkerLoop) { IsBackground = true, Name = "ChunkMesher" };
-        _worker.Start();
+        // Mehrere Worker, weil das Marching-Cubes-Meshing deutlich teurer ist als das kantige.
+        // Pro Chunk ist immer nur ein Job unterwegs, deshalb kann kein älteres Mesh ein neueres überholen.
+        int workerCount = Math.Clamp(Environment.ProcessorCount - 2, 1, 4);
+        _workers = new Thread[workerCount];
+        for (int i = 0; i < workerCount; i++)
+        {
+            _workers[i] = new Thread(WorkerLoop) { IsBackground = true, Name = $"ChunkMesher{i}" };
+            _workers[i].Start();
+        }
+    }
+
+    /// <summary>Darstellung umschalten — alle geladenen Chunks werden neu gemesht</summary>
+    public void SetSmoothRendering(bool smooth)
+    {
+        if (smooth == SmoothRendering) return;
+
+        SmoothRendering = smooth;
+        foreach (Chunk chunk in _world.Chunks)
+            _dirty.Add(chunk.Coord);
     }
 
     private void OnChunkUnloaded(ChunkCoord coord)
@@ -69,9 +89,14 @@ public sealed class ChunkMeshManager : IDisposable
         foreach (Chunk chunk in _world.Chunks)
         {
             byte[] padded = RentSnapshot(chunk);
-            ChunkMeshData data = ChunkMesher.Build(
-                padded, SnapshotRefinements(chunk), VoxelWorld.WorldHeight,
-                (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z);
+            Dictionary<int, ulong[]> refinements = SnapshotRefinements(chunk);
+            int worldX = (int)chunk.WorldPosition.X;
+            int worldZ = (int)chunk.WorldPosition.Z;
+
+            ChunkMeshData data = SmoothRendering
+                ? SmoothChunkMesher.Build(padded, refinements, VoxelWorld.WorldHeight, worldX, worldZ)
+                : ChunkMesher.Build(padded, refinements, VoxelWorld.WorldHeight, worldX, worldZ);
+
             ArrayPool<byte>.Shared.Return(padded);
             Upload(chunk.Coord, data);
         }
@@ -84,6 +109,7 @@ public sealed class ChunkMeshManager : IDisposable
         {
             _inFlight.Remove(result.Coord);
             if (result.Generation != GenerationOf(result.Coord)) continue; // Snapshot eines verworfenen Zustands
+            if (result.Smooth != SmoothRendering) continue; // Darstellung inzwischen umgeschaltet
             if (!_world.TryGetChunk(result.Coord, out _)) continue; // inzwischen entladen
             Upload(result.Coord, result.Data);
         }
@@ -96,15 +122,24 @@ public sealed class ChunkMeshManager : IDisposable
             if (!_inFlight.Contains(coord))
                 _startable.Add(coord);
 
+        // Snapshots laufen auf dem Main-Thread — gedrosselt, damit ein Moduswechsel
+        // (alle Chunks auf einmal dirty) keinen Frame-Ruckler erzeugt
+        const int maxStartsPerFrame = 12;
+        int started = 0;
+
         foreach (ChunkCoord coord in _startable)
         {
+            if (started >= maxStartsPerFrame) break;
+
             _dirty.Remove(coord);
             if (!_world.TryGetChunk(coord, out Chunk chunk)) continue;
+
+            started++;
 
             _inFlight.Add(coord);
             _jobs.Add(new MeshJob(
                 coord, RentSnapshot(chunk), SnapshotRefinements(chunk),
-                (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z, GenerationOf(coord)));
+                (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z, GenerationOf(coord), SmoothRendering));
         }
     }
 
@@ -112,9 +147,12 @@ public sealed class ChunkMeshManager : IDisposable
     {
         foreach (MeshJob job in _jobs.GetConsumingEnumerable())
         {
-            ChunkMeshData data = ChunkMesher.Build(job.Padded, job.Refinements, VoxelWorld.WorldHeight, job.WorldX, job.WorldZ);
+            ChunkMeshData data = job.Smooth
+                ? SmoothChunkMesher.Build(job.Padded, job.Refinements, VoxelWorld.WorldHeight, job.WorldX, job.WorldZ)
+                : ChunkMesher.Build(job.Padded, job.Refinements, VoxelWorld.WorldHeight, job.WorldX, job.WorldZ);
+
             ArrayPool<byte>.Shared.Return(job.Padded);
-            _results.Enqueue(new MeshResult(job.Coord, data, job.Generation));
+            _results.Enqueue(new MeshResult(job.Coord, data, job.Generation, job.Smooth));
         }
     }
 
@@ -170,6 +208,15 @@ public sealed class ChunkMeshManager : IDisposable
             AddBorderRefinement(refinements, baseX + Chunk.Size, y, baseZ + i, Chunk.Size, y, i);
             AddBorderRefinement(refinements, baseX + i, y, baseZ - 1, i, y, -1);
             AddBorderRefinement(refinements, baseX + i, y, baseZ + Chunk.Size, i, y, Chunk.Size);
+        }
+
+        // Diagonale Eckspalten — der Smooth-Mesher liest die volle 3x3x3-Nachbarschaft
+        for (int y = 0; y < VoxelWorld.WorldHeight; y++)
+        {
+            AddBorderRefinement(refinements, baseX - 1, y, baseZ - 1, -1, y, -1);
+            AddBorderRefinement(refinements, baseX - 1, y, baseZ + Chunk.Size, -1, y, Chunk.Size);
+            AddBorderRefinement(refinements, baseX + Chunk.Size, y, baseZ - 1, Chunk.Size, y, -1);
+            AddBorderRefinement(refinements, baseX + Chunk.Size, y, baseZ + Chunk.Size, Chunk.Size, y, Chunk.Size);
         }
 
         return refinements;
@@ -246,7 +293,8 @@ public sealed class ChunkMeshManager : IDisposable
     public void Dispose()
     {
         _jobs.CompleteAdding();
-        _worker.Join();
+        foreach (Thread worker in _workers)
+            worker.Join();
 
         // Übrige Ergebnisse verwerfen — die zugehörigen Meshes werden unten freigegeben
         while (_results.TryDequeue(out _)) { }
