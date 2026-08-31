@@ -14,6 +14,9 @@ public sealed class DebugSettings
     public float JumpSpeed { get; set; } = 10.2f;
     public float Gravity { get; set; } = 18.0f;
 
+    /// <summary>Reichweite für Abbauen und Bauen; ohne Treffer entsteht der Block frei in der Luft auf dieser Distanz</summary>
+    public float BuildReach { get; set; } = 8f;
+
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Terraformer", "debug-settings.json");
@@ -57,5 +60,6 @@ public sealed class DebugSettings
         SprintMultiplier = defaults.SprintMultiplier;
         JumpSpeed = defaults.JumpSpeed;
         Gravity = defaults.Gravity;
+        BuildReach = defaults.BuildReach;
     }
 }

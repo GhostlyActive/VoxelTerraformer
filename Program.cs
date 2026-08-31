@@ -75,8 +75,13 @@ public static class Program
             // Day/Night Update (Speed: Z/U)
             dayNight.Update(dt);
 
+            // Bau-Reichweite mit dem Mausrad einstellen (gilt für Abbauen, Bauen und Hover)
+            float wheel = Raylib.GetMouseWheelMove();
+            if (wheel != 0f)
+                settings.BuildReach = Math.Clamp(settings.BuildReach + wheel, 2f, 60f);
+
             // Welt-Interaktion
-            world.Update(camera, player.Bounds);
+            world.Update(camera, player.Bounds, settings.BuildReach);
 
             // Geänderte Chunks meshen (Worker-Thread) bzw. fertige Meshes hochladen
             meshManager.Update();
@@ -112,7 +117,7 @@ public static class Program
             // UI
             Raylib.DrawFPS(10, 10);
             Raylib.DrawText("WASD move | Shift sprint | Space jump | LMB remove | RMB place", 10, 40, 20, Color.Black);
-            Raylib.DrawText("Z/U day speed | F3 debug | M tuning", 10, 65, 20, Color.Black);
+            Raylib.DrawText("Wheel: build reach | Z/U day speed | F3 debug | M tuning", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
             if (debugOverlay)
@@ -129,6 +134,13 @@ public static class Program
             int cx = Raylib.GetScreenWidth() / 2;
             int cy = Raylib.GetScreenHeight() / 2;
             Raylib.DrawCircle(cx, cy, 4, Color.Black);
+
+            // Aktuelle Bau-Reichweite unten mittig
+            string reachLabel = $"Reach: {settings.BuildReach:0}";
+            int reachWidth = Raylib.MeasureText(reachLabel, 16);
+            int reachY = Raylib.GetScreenHeight() - 40;
+            Raylib.DrawText(reachLabel, cx - reachWidth / 2 + 1, reachY + 1, 16, new Color(10, 15, 25, 200));
+            Raylib.DrawText(reachLabel, cx - reachWidth / 2, reachY, 16, new Color(220, 245, 250, 240));
 
             debugMenu.Draw(Raylib.GetScreenWidth());
 

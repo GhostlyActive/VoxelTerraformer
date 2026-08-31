@@ -13,9 +13,16 @@ public class VoxelWorld
 
     private readonly Dictionary<ChunkCoord, Chunk> _chunks = new();
 
-    // Optional debug info (for highlighting)
+    // Ziel im Fadenkreuz: entweder ein getroffener Block (Hover) oder — wenn innerhalb
+    // der Reichweite nichts im Weg ist — eine freie Zelle in der Luft (Ghost)
     private bool _hasHover;
+    private VoxelRaycast.Vector3Int _hoverBlock;
+    private VoxelRaycast.Vector3Int _hoverPlaceCell;
     private Vector3 _hoverCenter;
+
+    private bool _hasGhost;
+    private VoxelRaycast.Vector3Int _ghostCell;
+    private Vector3 _ghostCenter;
 
     /// <summary>Chunk braucht ein neues Mesh (feuert bei Kanten-Edits auch für Nachbarn)</summary>
     public event Action<ChunkCoord>? ChunkDirty;
@@ -38,86 +45,91 @@ public class VoxelWorld
     public bool TryGetChunk(ChunkCoord coord, out Chunk chunk)
         => _chunks.TryGetValue(coord, out chunk!);
 
-    public void Update(Camera3D camera, BoundingBox playerBounds)
+    public void Update(Camera3D camera, BoundingBox playerBounds, float buildReach)
     {
         // Inputs: Mouse + keyboard fallback
         bool remove = Raylib.IsMouseButtonPressed(MouseButton.Left) || Raylib.IsKeyPressed(KeyboardKey.O);
         bool place  = Raylib.IsMouseButtonPressed(MouseButton.Right) || Raylib.IsKeyPressed(KeyboardKey.P);
 
-        // Always refresh hover (so you can see what you're aiming at)
-        UpdateHover(camera);
+        // Hover/Ghost jeden Frame aktualisieren — Abbauen/Bauen wirken exakt auf das markierte Ziel
+        UpdateHover(camera, buildReach);
 
-        if (remove) TryRemove(camera);
-        if (place)  TryPlace(camera, playerBounds);
+        if (remove) TryRemove();
+        if (place)  TryPlace(playerBounds);
     }
 
     public void DrawHover()
     {
         if (_hasHover)
             Raylib.DrawCubeWires(_hoverCenter, 1.02f, 1.02f, 1.02f, Color.Yellow);
+        else if (_hasGhost)
+            Raylib.DrawCubeWires(_ghostCenter, 1f, 1f, 1f, new Color(95, 225, 235, 220));
     }
 
     // --- Interaction ---
 
-    private void UpdateHover(Camera3D camera)
+    private void UpdateHover(Camera3D camera, float buildReach)
     {
         _hasHover = false;
+        _hasGhost = false;
 
         Ray ray = Raylib.GetScreenToWorldRay(
             new Vector2(Raylib.GetScreenWidth() / 2, Raylib.GetScreenHeight() / 2),
             camera
         );
 
-        var hit = VoxelRaycast.Cast(GetBlock, ray.Position, ray.Direction, 60f);
-        if (!hit.HasHit) return;
+        var hit = VoxelRaycast.Cast(GetBlock, ray.Position, ray.Direction, buildReach);
+        if (hit.HasHit)
+        {
+            _hoverBlock = hit.Block;
+            _hoverPlaceCell = hit.PlaceBlock;
+            _hoverCenter = new Vector3(hit.Block.X + 0.5f, hit.Block.Y + 0.5f, hit.Block.Z + 0.5f);
+            _hasHover = true;
+            return;
+        }
 
-        _hoverCenter = new Vector3(hit.Block.X + 0.5f, hit.Block.Y + 0.5f, hit.Block.Z + 0.5f);
-        _hasHover = true;
+        // Nichts im Weg → Bau-Ziel frei in der Luft am Ende der Reichweite
+        Vector3 target = ray.Position + Vector3.Normalize(ray.Direction) * buildReach;
+        int gx = (int)MathF.Floor(target.X);
+        int gy = (int)MathF.Floor(target.Y);
+        int gz = (int)MathF.Floor(target.Z);
+
+        if (gy < 0 || gy >= WorldHeight) return;
+        if (GetBlock(gx, gy, gz) != 0) return;
+
+        _ghostCell = new VoxelRaycast.Vector3Int(gx, gy, gz);
+        _ghostCenter = new Vector3(gx + 0.5f, gy + 0.5f, gz + 0.5f);
+        _hasGhost = true;
     }
 
-    private void TryRemove(Camera3D camera)
+    private void TryRemove()
     {
-        Ray ray = Raylib.GetScreenToWorldRay(
-            new Vector2(Raylib.GetScreenWidth() / 2, Raylib.GetScreenHeight() / 2),
-            camera
-        );
+        if (!_hasHover) return;
 
-        var hit = VoxelRaycast.Cast(GetBlock, ray.Position, ray.Direction, 60f);
-        if (!hit.HasHit) return;
+        int id = GetBlock(_hoverBlock.X, _hoverBlock.Y, _hoverBlock.Z);
+        Color albedo = TerrainColors.ForBlock(id, _hoverBlock.X, _hoverBlock.Y, _hoverBlock.Z);
 
-        int id = GetBlock(hit.Block.X, hit.Block.Y, hit.Block.Z);
-        Color albedo = TerrainColors.ForBlock(id, hit.Block.X, hit.Block.Y, hit.Block.Z);
+        SetBlock(_hoverBlock.X, _hoverBlock.Y, _hoverBlock.Z, BlockRegistry.Air);
 
-        SetBlock(hit.Block.X, hit.Block.Y, hit.Block.Z, BlockRegistry.Air);
-
-        BlockBroken?.Invoke(
-            new Vector3(hit.Block.X + 0.5f, hit.Block.Y + 0.5f, hit.Block.Z + 0.5f),
-            albedo);
+        BlockBroken?.Invoke(_hoverCenter, albedo);
     }
 
-    private void TryPlace(Camera3D camera, BoundingBox playerBounds)
+    private void TryPlace(BoundingBox playerBounds)
     {
-        Ray ray = Raylib.GetScreenToWorldRay(
-            new Vector2(Raylib.GetScreenWidth() / 2, Raylib.GetScreenHeight() / 2),
-            camera
-        );
+        // Blick auf einen Block → an dessen Fläche bauen; sonst frei in die Luft auf Reichweite
+        VoxelRaycast.Vector3Int cell;
+        if (_hasHover) cell = _hoverPlaceCell;
+        else if (_hasGhost) cell = _ghostCell;
+        else return;
 
-        var hit = VoxelRaycast.Cast(GetBlock, ray.Position, ray.Direction, 60f);
-        if (!hit.HasHit) return;
+        if (GetBlock(cell.X, cell.Y, cell.Z) != 0) return; // must be air
+        if (IntersectsBlock(playerBounds, cell.X, cell.Y, cell.Z)) return; // nicht in den Spieler hinein bauen
 
-        // Place into neighbor cell (the face you are pointing at)
-        int px = hit.PlaceBlock.X;
-        int py = hit.PlaceBlock.Y;
-        int pz = hit.PlaceBlock.Z;
-
-        if (GetBlock(px, py, pz) != 0) return; // must be air
-        if (IntersectsBlock(playerBounds, px, py, pz)) return; // nicht in den Spieler hinein bauen
-
-        SetBlock(px, py, pz, BlockRegistry.Stone);
+        SetBlock(cell.X, cell.Y, cell.Z, BlockRegistry.Stone);
 
         BlockPlaced?.Invoke(
-            new Vector3(px + 0.5f, py + 0.5f, pz + 0.5f),
-            TerrainColors.ForBlock(BlockRegistry.Stone, px, py, pz));
+            new Vector3(cell.X + 0.5f, cell.Y + 0.5f, cell.Z + 0.5f),
+            TerrainColors.ForBlock(BlockRegistry.Stone, cell.X, cell.Y, cell.Z));
     }
 
     private static bool IntersectsBlock(BoundingBox box, int x, int y, int z)

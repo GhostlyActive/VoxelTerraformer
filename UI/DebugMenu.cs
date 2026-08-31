@@ -35,6 +35,7 @@ public sealed class DebugMenu
             new Entry("Sprint multiplier", () => settings.SprintMultiplier, v => settings.SprintMultiplier = v, 0.1f, 1f, 4f, "0.0"),
             new Entry("Jump power", () => settings.JumpSpeed, v => settings.JumpSpeed = v, 0.5f, 2f, 30f, "0.0"),
             new Entry("Gravity", () => settings.Gravity, v => settings.Gravity = v, 1f, 2f, 60f, "0"),
+            new Entry("Build reach", () => settings.BuildReach, v => settings.BuildReach = v, 1f, 2f, 60f, "0"),
         };
     }
 
