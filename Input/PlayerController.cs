@@ -199,7 +199,7 @@ public class PlayerController
         {
             if (!BlockRegistry.IsSolid(world.GetBlock(x, y, z))) continue;
 
-            if (world.TryGetRefinement(x, y, z, out ulong mask))
+            if (world.TryGetRefinement(x, y, z, out ulong[] mask))
             {
                 const float cell = SubVoxels.CellSize;
                 for (int sz = 0; sz < SubVoxels.Divisions; sz++)

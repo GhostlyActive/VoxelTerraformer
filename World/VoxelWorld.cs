@@ -159,7 +159,7 @@ public class VoxelWorld
         {
             chunk = kept;
         }
-        else if (_diskIsBase && _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks, out Dictionary<int, ulong>? refinements))
+        else if (_diskIsBase && _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks, out Dictionary<int, ulong[]>? refinements))
         {
             chunk = new Chunk(coord, WorldHeight, blocks, refinements);
         }
@@ -301,16 +301,22 @@ public class VoxelWorld
             bool solid = BlockRegistry.IsSolid(id);
             if (!add && !solid) continue; // Luft lässt sich nicht weiter aushöhlen
 
-            ulong mask = solid
-                ? (chunk.TryGetRefinement(lx, by, lz, WorldHeight, out ulong existing) ? existing : ulong.MaxValue)
-                : 0UL;
+            // Copy-on-Write: gespeicherte Masken nie in-place ändern (Worker-Threads lesen sie)
+            ulong[] working = solid
+                ? (chunk.TryGetRefinement(lx, by, lz, WorldHeight, out ulong[] existing)
+                    ? (ulong[])existing.Clone()
+                    : SubVoxels.NewFull())
+                : SubVoxels.NewEmpty();
 
-            ulong newMask = mask;
+            bool changed = false;
 
             for (int sz = 0; sz < SubVoxels.Divisions; sz++)
             for (int sy = 0; sy < SubVoxels.Divisions; sy++)
             for (int sx = 0; sx < SubVoxels.Divisions; sx++)
             {
+                bool has = SubVoxels.HasBit(working, sx, sy, sz);
+                if (add == has) continue; // schon im Zielzustand
+
                 var subCenter = new Vector3(
                     bx + (sx + 0.5f) * SubVoxels.CellSize,
                     by + (sy + 0.5f) * SubVoxels.CellSize,
@@ -319,27 +325,27 @@ public class VoxelWorld
                 if (Vector3.DistanceSquared(subCenter, center) > radiusSquared) continue;
                 if (add && SubIntersectsBox(playerBounds, bx, by, bz, sx, sy, sz)) continue; // nicht in den Spieler bauen
 
-                ulong bit = 1UL << SubVoxels.BitIndex(sx, sy, sz);
-                if (add) newMask |= bit;
-                else newMask &= ~bit;
+                if (add) SubVoxels.SetBit(working, sx, sy, sz);
+                else SubVoxels.ClearBit(working, sx, sy, sz);
+                changed = true;
             }
 
-            if (newMask == mask) continue;
+            if (!changed) continue;
 
             if (!solid)
             {
                 // Luft bekommt Substanz → Block anlegen (SetLocal räumt alte Details mit weg)
                 chunk.SetLocal(lx, by, lz, blockId, WorldHeight);
-                if (newMask != ulong.MaxValue)
-                    chunk.SetRefinement(lx, by, lz, newMask, WorldHeight);
+                if (!SubVoxels.IsFull(working))
+                    chunk.SetRefinement(lx, by, lz, working, WorldHeight);
             }
-            else if (newMask == 0)
+            else if (SubVoxels.IsEmpty(working))
             {
                 chunk.SetLocal(lx, by, lz, BlockRegistry.Air, WorldHeight); // komplett weggeschnitzt
             }
             else
             {
-                chunk.SetRefinement(lx, by, lz, newMask, WorldHeight); // volle Maske entfernt den Eintrag selbst
+                chunk.SetRefinement(lx, by, lz, working, WorldHeight); // volle Maske entfernt den Eintrag selbst
             }
 
             FireDirtyAround(cc, lx, lz);
@@ -440,9 +446,9 @@ public class VoxelWorld
         return chunk.GetLocal(lx, wy, lz, WorldHeight);
     }
 
-    public bool TryGetRefinement(int wx, int wy, int wz, out ulong mask)
+    public bool TryGetRefinement(int wx, int wy, int wz, out ulong[] mask)
     {
-        mask = 0;
+        mask = null!;
         if (wy < 0 || wy >= WorldHeight) return false;
 
         var (cc, lx, lz) = WorldToChunk(wx, wz);
@@ -451,21 +457,21 @@ public class VoxelWorld
         return chunk.TryGetRefinement(lx, wy, lz, WorldHeight, out mask);
     }
 
-    /// <summary>Blocktyp der Sub-Zelle (Welt-Sub-Koordinaten, 4 pro Block), 0 = Luft</summary>
+    /// <summary>Blocktyp der Sub-Zelle (Welt-Sub-Koordinaten, 8 pro Block), 0 = Luft</summary>
     public int GetSubVoxel(int swx, int swy, int swz)
     {
-        // >> 2 und & 3 entsprechen FloorDiv/Modulo für die Zweierpotenz 4 (auch für negative Werte)
-        int wx = swx >> 2;
-        int wy = swy >> 2;
-        int wz = swz >> 2;
+        // Shift/LowMask entsprechen FloorDiv/Modulo für die Zweierpotenz (auch für negative Werte)
+        int wx = swx >> SubVoxels.Shift;
+        int wy = swy >> SubVoxels.Shift;
+        int wz = swz >> SubVoxels.Shift;
 
         if (wy < 0 || wy >= WorldHeight) return 0;
 
         int id = GetBlock(wx, wy, wz);
         if (!BlockRegistry.IsSolid(id)) return 0;
 
-        if (!TryGetRefinement(wx, wy, wz, out ulong mask)) return id; // Vollblock
-        return SubVoxels.HasBit(mask, swx & 3, swy & 3, swz & 3) ? id : 0;
+        if (!TryGetRefinement(wx, wy, wz, out ulong[] mask)) return id; // Vollblock
+        return SubVoxels.HasBit(mask, swx & SubVoxels.LowMask, swy & SubVoxels.LowMask, swz & SubVoxels.LowMask) ? id : 0;
     }
 
     public void SetBlock(int wx, int wy, int wz, int id)

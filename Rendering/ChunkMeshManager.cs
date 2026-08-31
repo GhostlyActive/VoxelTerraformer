@@ -19,7 +19,7 @@ public sealed class ChunkMeshManager : IDisposable
         public bool HasMesh;
     }
 
-    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, ulong> Refinements, int WorldX, int WorldZ);
+    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, ulong[]> Refinements, int WorldX, int WorldZ);
     private readonly record struct MeshResult(ChunkCoord Coord, ChunkMeshData Data);
 
     private readonly VoxelWorld _world;
@@ -142,11 +142,11 @@ public sealed class ChunkMeshManager : IDisposable
 
     // Sub-Voxel-Masken des Chunks (auf Padded-Indizes umgeschlüsselt) plus die der
     // direkt angrenzenden Nachbarblöcke — fürs Sub-Culling an den Chunk-Grenzen
-    private Dictionary<int, ulong> SnapshotRefinements(Chunk chunk)
+    private Dictionary<int, ulong[]> SnapshotRefinements(Chunk chunk)
     {
-        var refinements = new Dictionary<int, ulong>();
+        var refinements = new Dictionary<int, ulong[]>();
 
-        foreach ((int index, ulong mask) in chunk.Refinements)
+        foreach ((int index, ulong[] mask) in chunk.Refinements)
         {
             (int x, int y, int z) = Chunk.DecodeIndex(index);
             refinements[ChunkMesher.Index(x, y, z)] = mask;
@@ -167,9 +167,9 @@ public sealed class ChunkMeshManager : IDisposable
         return refinements;
     }
 
-    private void AddBorderRefinement(Dictionary<int, ulong> refinements, int wx, int wy, int wz, int lx, int ly, int lz)
+    private void AddBorderRefinement(Dictionary<int, ulong[]> refinements, int wx, int wy, int wz, int lx, int ly, int lz)
     {
-        if (_world.TryGetRefinement(wx, wy, wz, out ulong mask))
+        if (_world.TryGetRefinement(wx, wy, wz, out ulong[] mask))
             refinements[ChunkMesher.Index(lx, ly, lz)] = mask;
     }
 

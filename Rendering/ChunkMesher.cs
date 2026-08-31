@@ -46,7 +46,7 @@ public static class ChunkMesher
     private static readonly int[] _quadOrder = { 0, 1, 2, 0, 2, 3 };
     private static readonly int[] _quadOrderFlipped = { 1, 2, 3, 1, 3, 0 };
 
-    public static ChunkMeshData Build(byte[] padded, Dictionary<int, ulong> refinements, int worldHeight, int worldX, int worldZ)
+    public static ChunkMeshData Build(byte[] padded, Dictionary<int, ulong[]> refinements, int worldHeight, int worldX, int worldZ)
     {
         var vertices = new List<float>(24576);
         var normals = new List<float>(24576);
@@ -59,7 +59,7 @@ public static class ChunkMesher
             int id = padded[Index(x, y, z)];
             if (!BlockRegistry.IsSolid(id)) continue;
 
-            bool refined = refinements.TryGetValue(Index(x, y, z), out ulong ownMask);
+            bool refined = refinements.TryGetValue(Index(x, y, z), out ulong[]? ownMask);
 
             if (!refined)
             {
@@ -78,7 +78,7 @@ public static class ChunkMesher
 
             if (refined)
             {
-                EmitRefinedBlock(vertices, normals, colors, padded, refinements, x, y, z, ownMask, albedo, emissive);
+                EmitRefinedBlock(vertices, normals, colors, padded, refinements, x, y, z, ownMask!, albedo, emissive);
                 continue;
             }
 
@@ -102,14 +102,13 @@ public static class ChunkMesher
 
     // Ein Nachbar verdeckt eine Fläche nur, wenn er solide ist UND seine zugewandte
     // Sub-Voxel-Randschicht komplett gefüllt ist (Vollblöcke sind implizit voll)
-    private static bool NeighborOccludes(byte[] padded, Dictionary<int, ulong> refinements, int nx, int ny, int nz, int faceIndex)
+    private static bool NeighborOccludes(byte[] padded, Dictionary<int, ulong[]> refinements, int nx, int ny, int nz, int faceIndex)
     {
         int index = Index(nx, ny, nz);
         if (!BlockRegistry.IsSolid(padded[index])) return false;
-        if (!refinements.TryGetValue(index, out ulong mask)) return true;
+        if (!refinements.TryGetValue(index, out ulong[]? mask)) return true;
 
-        ulong layer = SubVoxels.FaceLayers[faceIndex ^ 1];
-        return (mask & layer) == layer;
+        return SubVoxels.LayerFull(mask!, faceIndex ^ 1);
     }
 
     private static void EmitRefinedBlock(
@@ -117,9 +116,9 @@ public static class ChunkMesher
         List<float> normals,
         List<byte> colors,
         byte[] padded,
-        Dictionary<int, ulong> refinements,
+        Dictionary<int, ulong[]> refinements,
         int x, int y, int z,
-        ulong mask,
+        ulong[] mask,
         Color albedo,
         byte emissive)
     {
@@ -152,17 +151,17 @@ public static class ChunkMesher
                     {
                         occluded = false;
                     }
-                    else if (!refinements.TryGetValue(index, out ulong neighborMask))
+                    else if (!refinements.TryGetValue(index, out ulong[]? neighborMask))
                     {
                         occluded = true; // Vollblock
                     }
                     else
                     {
                         occluded = SubVoxels.HasBit(
-                            neighborMask,
-                            (nsx + SubVoxels.Divisions) & 3,
-                            (nsy + SubVoxels.Divisions) & 3,
-                            (nsz + SubVoxels.Divisions) & 3);
+                            neighborMask!,
+                            (nsx + SubVoxels.Divisions) & SubVoxels.LowMask,
+                            (nsy + SubVoxels.Divisions) & SubVoxels.LowMask,
+                            (nsz + SubVoxels.Divisions) & SubVoxels.LowMask);
                     }
                 }
 

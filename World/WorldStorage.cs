@@ -10,7 +10,7 @@ namespace Terraformer.World;
 /// </summary>
 public sealed class WorldStorage
 {
-    private const byte FormatVersion = 2; // v2: Blöcke + Sub-Voxel-Masken (Sculpt)
+    private const byte FormatVersion = 3; // v3: Blöcke + 512-Bit-Sub-Voxel-Masken (Sculpt, 8x8x8)
 
     private sealed class WorldMeta
     {
@@ -87,7 +87,7 @@ public sealed class WorldStorage
         }
     }
 
-    public bool TryLoad(ChunkCoord coord, int expectedLength, out byte[]? blocks, out Dictionary<int, ulong>? refinements)
+    public bool TryLoad(ChunkCoord coord, int expectedLength, out byte[]? blocks, out Dictionary<int, ulong[]>? refinements)
     {
         blocks = null;
         refinements = null;
@@ -109,11 +109,13 @@ public sealed class WorldStorage
             int count = reader.ReadInt32();
             if (count < 0 || count > expectedLength) return false; // offensichtlich kaputt
 
-            var loadedRefinements = new Dictionary<int, ulong>(count);
+            var loadedRefinements = new Dictionary<int, ulong[]>(count);
             for (int i = 0; i < count; i++)
             {
                 int index = reader.ReadInt32();
-                ulong mask = reader.ReadUInt64();
+                var mask = new ulong[SubVoxels.WordCount];
+                for (int word = 0; word < SubVoxels.WordCount; word++)
+                    mask[word] = reader.ReadUInt64();
                 loadedRefinements[index] = mask;
             }
 
@@ -130,7 +132,7 @@ public sealed class WorldStorage
         }
     }
 
-    public void Save(ChunkCoord coord, byte[] blocks, IReadOnlyDictionary<int, ulong> refinements)
+    public void Save(ChunkCoord coord, byte[] blocks, IReadOnlyDictionary<int, ulong[]> refinements)
     {
         try
         {
@@ -144,10 +146,11 @@ public sealed class WorldStorage
 
             writer.Write(blocks);
             writer.Write(refinements.Count);
-            foreach ((int index, ulong mask) in refinements)
+            foreach ((int index, ulong[] mask) in refinements)
             {
                 writer.Write(index);
-                writer.Write(mask);
+                for (int word = 0; word < SubVoxels.WordCount; word++)
+                    writer.Write(mask[word]);
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
