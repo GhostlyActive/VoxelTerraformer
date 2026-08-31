@@ -74,14 +74,23 @@ public static class Program
         {
             float dt = Raylib.GetFrameTime();
 
+            // War das Pause-Menü zu Framebeginn offen, bekommt das Gameplay diesen Frame
+            // keine Inputs — sonst leakt z. B. das bestätigende Enter ins Debug-Menü
+            bool pauseWasOpen = pauseMenu.IsOpen;
+
             PauseMenuAction menuAction = pauseMenu.Update();
             switch (menuAction)
             {
                 case PauseMenuAction.Save:
-                    world.SaveWorld();
-                    storage.SaveMeta(player.Position, dayNight.TimeSeconds);
-                    pauseMenu.Close();
-                    pauseMenu.ShowStatus("World saved");
+                    if (world.SaveWorld() && storage.SaveMeta(player.Position, dayNight.TimeSeconds))
+                    {
+                        pauseMenu.Close();
+                        pauseMenu.ShowStatus("World saved");
+                    }
+                    else
+                    {
+                        pauseMenu.ShowStatus("Save failed!");
+                    }
                     break;
 
                 case PauseMenuAction.Load:
@@ -98,7 +107,7 @@ public static class Program
                     }
                     else
                     {
-                        pauseMenu.ShowStatus("No save found");
+                        pauseMenu.ShowStatus("No compatible save found");
                     }
                     break;
 
@@ -107,7 +116,7 @@ public static class Program
                     break;
             }
 
-            bool paused = pauseMenu.IsOpen;
+            bool paused = pauseMenu.IsOpen || pauseWasOpen;
 
             // Cursor freigeben, solange das Pause-Menü offen ist
             if (!smokeTest)

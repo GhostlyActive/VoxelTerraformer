@@ -19,14 +19,18 @@ public sealed class ChunkMeshManager : IDisposable
         public bool HasMesh;
     }
 
-    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, ulong[]> Refinements, int WorldX, int WorldZ);
-    private readonly record struct MeshResult(ChunkCoord Coord, ChunkMeshData Data);
+    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, ulong[]> Refinements, int WorldX, int WorldZ, int Generation);
+    private readonly record struct MeshResult(ChunkCoord Coord, ChunkMeshData Data, int Generation);
 
     private readonly VoxelWorld _world;
     private readonly Dictionary<ChunkCoord, Entry> _entries = new();
     private readonly HashSet<ChunkCoord> _dirty = new();
     private readonly HashSet<ChunkCoord> _inFlight = new();
     private readonly List<ChunkCoord> _startable = new();
+
+    // Zählt pro Koordinate die Entladungen: Ergebnisse alter Generationen (z. B. von vor
+    // einem "Load world") werden verworfen, auch wenn die Koordinate wieder belegt ist
+    private readonly Dictionary<ChunkCoord, int> _generations = new();
 
     private readonly BlockingCollection<MeshJob> _jobs = new();
     private readonly ConcurrentQueue<MeshResult> _results = new();
@@ -50,11 +54,14 @@ public sealed class ChunkMeshManager : IDisposable
     private void OnChunkUnloaded(ChunkCoord coord)
     {
         _dirty.Remove(coord);
-        // Ein evtl. laufender Job wird beim Eintreffen des Ergebnisses verworfen (Chunk existiert nicht mehr)
+        _generations[coord] = GenerationOf(coord) + 1; // laufende Jobs dieser Koordinate entwerten
 
         if (_entries.Remove(coord, out Entry? entry) && entry.HasMesh)
             Raylib.UnloadMesh(entry.Mesh);
     }
+
+    private int GenerationOf(ChunkCoord coord)
+        => _generations.TryGetValue(coord, out int generation) ? generation : 0;
 
     /// <summary>Meshed alle vorhandenen Chunks synchron — einmalig beim Start, damit die Welt komplett dasteht</summary>
     public void BuildAllNow()
@@ -76,6 +83,7 @@ public sealed class ChunkMeshManager : IDisposable
         while (_results.TryDequeue(out MeshResult result))
         {
             _inFlight.Remove(result.Coord);
+            if (result.Generation != GenerationOf(result.Coord)) continue; // Snapshot eines verworfenen Zustands
             if (!_world.TryGetChunk(result.Coord, out _)) continue; // inzwischen entladen
             Upload(result.Coord, result.Data);
         }
@@ -96,7 +104,7 @@ public sealed class ChunkMeshManager : IDisposable
             _inFlight.Add(coord);
             _jobs.Add(new MeshJob(
                 coord, RentSnapshot(chunk), SnapshotRefinements(chunk),
-                (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z));
+                (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z, GenerationOf(coord)));
         }
     }
 
@@ -106,7 +114,7 @@ public sealed class ChunkMeshManager : IDisposable
         {
             ChunkMeshData data = ChunkMesher.Build(job.Padded, job.Refinements, VoxelWorld.WorldHeight, job.WorldX, job.WorldZ);
             ArrayPool<byte>.Shared.Return(job.Padded);
-            _results.Enqueue(new MeshResult(job.Coord, data));
+            _results.Enqueue(new MeshResult(job.Coord, data, job.Generation));
         }
     }
 

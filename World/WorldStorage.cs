@@ -14,6 +14,7 @@ public sealed class WorldStorage
 
     private sealed class WorldMeta
     {
+        public int Version { get; set; } // fehlt bei alten Spielständen → 0 → inkompatibel
         public float PlayerX { get; set; }
         public float PlayerY { get; set; }
         public float PlayerZ { get; set; }
@@ -31,6 +32,22 @@ public sealed class WorldStorage
     // Die Meta-Datei ist der Marker dafür, dass ein Spielstand existiert
     public bool HasSave => File.Exists(MetaPath);
 
+    /// <summary>Spielstand vorhanden UND im aktuellen Format? Sonst würde "Load" still eine frische Welt liefern.</summary>
+    public bool HasCompatibleSave => ReadMeta() is { } meta && meta.Version == FormatVersion;
+
+    private WorldMeta? ReadMeta()
+    {
+        try
+        {
+            if (!File.Exists(MetaPath)) return null;
+            return JsonSerializer.Deserialize<WorldMeta>(File.ReadAllText(MetaPath));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Alten Spielstand komplett entfernen (bevor ein neuer geschrieben wird)</summary>
     public void DeleteAll()
     {
@@ -46,22 +63,25 @@ public sealed class WorldStorage
         }
     }
 
-    public void SaveMeta(Vector3 playerPosition, float timeSeconds)
+    public bool SaveMeta(Vector3 playerPosition, float timeSeconds)
     {
         try
         {
             Directory.CreateDirectory(_directory);
             var meta = new WorldMeta
             {
+                Version = FormatVersion,
                 PlayerX = playerPosition.X,
                 PlayerY = playerPosition.Y,
                 PlayerZ = playerPosition.Z,
                 TimeSeconds = timeSeconds,
             };
             File.WriteAllText(MetaPath, JsonSerializer.Serialize(meta));
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            return false;
         }
     }
 
@@ -70,21 +90,12 @@ public sealed class WorldStorage
         playerPosition = default;
         timeSeconds = 0f;
 
-        try
-        {
-            if (!File.Exists(MetaPath)) return false;
+        WorldMeta? meta = ReadMeta();
+        if (meta == null) return false;
 
-            WorldMeta? meta = JsonSerializer.Deserialize<WorldMeta>(File.ReadAllText(MetaPath));
-            if (meta == null) return false;
-
-            playerPosition = new Vector3(meta.PlayerX, meta.PlayerY, meta.PlayerZ);
-            timeSeconds = meta.TimeSeconds;
-            return true;
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
-        {
-            return false;
-        }
+        playerPosition = new Vector3(meta.PlayerX, meta.PlayerY, meta.PlayerZ);
+        timeSeconds = meta.TimeSeconds;
+        return true;
     }
 
     public bool TryLoad(ChunkCoord coord, int expectedLength, out byte[]? blocks, out Dictionary<int, ulong[]>? refinements)
@@ -113,6 +124,8 @@ public sealed class WorldStorage
             for (int i = 0; i < count; i++)
             {
                 int index = reader.ReadInt32();
+                if (index < 0 || index >= expectedLength) return false; // korrupte Daten
+
                 var mask = new ulong[SubVoxels.WordCount];
                 for (int word = 0; word < SubVoxels.WordCount; word++)
                     mask[word] = reader.ReadUInt64();
@@ -123,16 +136,17 @@ public sealed class WorldStorage
             refinements = loadedRefinements;
             return true;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or EndOfStreamException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or EndOfStreamException or InvalidDataException)
         {
-            // Unlesbare Datei → Chunk wird frisch generiert statt zu crashen
+            // Unlesbare/korrupte Datei (InvalidDataException: kaputte Deflate-Daten)
+            // → Chunk wird frisch generiert statt zu crashen
             blocks = null;
             refinements = null;
             return false;
         }
     }
 
-    public void Save(ChunkCoord coord, byte[] blocks, IReadOnlyDictionary<int, ulong[]> refinements)
+    public bool Save(ChunkCoord coord, byte[] blocks, IReadOnlyDictionary<int, ulong[]> refinements)
     {
         try
         {
@@ -152,10 +166,13 @@ public sealed class WorldStorage
                 for (int word = 0; word < SubVoxels.WordCount; word++)
                     writer.Write(mask[word]);
             }
+
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Speichern ist Best-Effort — das Spiel läuft weiter
+            // Fehlschlag meldet der Aufrufer dem Spieler ("Save failed")
+            return false;
         }
     }
 }

@@ -115,29 +115,38 @@ public class VoxelWorld
     }
 
     /// <summary>Manuelles Speichern: der komplette aktuelle Weltzustand wird zum Spielstand</summary>
-    public void SaveWorld()
+    public bool SaveWorld()
     {
         // Frische Session: der alte Spielstand wird ersetzt, nicht vermischt
         if (!_diskIsBase) _storage.DeleteAll();
 
+        bool allWritten = true;
+
         foreach ((ChunkCoord coord, Chunk chunk) in _chunks)
         {
             if (!chunk.Modified) continue;
-            _storage.Save(coord, chunk.RawBlocks, chunk.Refinements);
-            chunk.MarkSaved();
+            allWritten &= _storage.Save(coord, chunk.RawBlocks, chunk.Refinements);
         }
 
         foreach ((ChunkCoord coord, Chunk chunk) in _keptModified)
-            _storage.Save(coord, chunk.RawBlocks, chunk.Refinements);
+            allWritten &= _storage.Save(coord, chunk.RawBlocks, chunk.Refinements);
+
+        // Bei Fehlschlag Zustand unangetastet lassen — der nächste Versuch speichert wieder alles
+        if (!allWritten) return false;
+
+        foreach ((ChunkCoord _, Chunk chunk) in _chunks)
+            if (chunk.Modified) chunk.MarkSaved();
         _keptModified.Clear();
 
         _diskIsBase = true;
+        return true;
     }
 
     /// <summary>Manuelles Laden: verwirft den aktuellen Zustand und stellt den Spielstand her</summary>
     public bool LoadWorld()
     {
-        if (!_storage.HasSave) return false;
+        // Alte/fremde Formatversionen ablehnen — sonst würde still eine frische Welt geladen
+        if (!_storage.HasCompatibleSave) return false;
 
         _keptModified.Clear();
         _diskIsBase = true;
