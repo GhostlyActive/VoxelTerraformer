@@ -34,6 +34,8 @@ public class Chunk
     // Direkter Zugriff nur für Speichern/Laden — nicht aus Gameplay-Code verwenden
     internal byte[] RawBlocks => _blocks;
 
+    internal void MarkSaved() => Modified = false;
+
     public int GetLocal(int x, int y, int z, int worldHeight)
     {
         if (!InBounds(x, y, z, worldHeight)) return 0;

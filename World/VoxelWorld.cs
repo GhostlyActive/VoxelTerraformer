@@ -19,6 +19,11 @@ public class VoxelWorld
     private readonly Dictionary<ChunkCoord, Chunk> _chunks = new();
     private readonly WorldStorage _storage;
 
+    // Veränderte Chunks überleben das Entladen im Speicher — auf Platte kommt nur, was
+    // der Spieler ausdrücklich speichert. Beim App-Start ist die Welt immer frisch.
+    private readonly Dictionary<ChunkCoord, Chunk> _keptModified = new();
+    private bool _diskIsBase; // erst nach Save/Load ist der Spielstand die Basis fürs Chunk-Laden
+
     // Ziel im Fadenkreuz: entweder ein getroffener Block (Hover) oder — wenn innerhalb
     // der Reichweite nichts im Weg ist — eine freie Zelle in der Luft (Ghost)
     private bool _hasHover;
@@ -99,19 +104,59 @@ public class VoxelWorld
         }
     }
 
-    /// <summary>Alle veränderten Chunks auf Platte schreiben (beim Beenden)</summary>
-    public void SaveModified()
+    /// <summary>Manuelles Speichern: der komplette aktuelle Weltzustand wird zum Spielstand</summary>
+    public void SaveWorld()
     {
+        // Frische Session: der alte Spielstand wird ersetzt, nicht vermischt
+        if (!_diskIsBase) _storage.DeleteAll();
+
         foreach ((ChunkCoord coord, Chunk chunk) in _chunks)
-            if (chunk.Modified)
-                _storage.Save(coord, chunk.RawBlocks);
+        {
+            if (!chunk.Modified) continue;
+            _storage.Save(coord, chunk.RawBlocks);
+            chunk.MarkSaved();
+        }
+
+        foreach ((ChunkCoord coord, Chunk chunk) in _keptModified)
+            _storage.Save(coord, chunk.RawBlocks);
+        _keptModified.Clear();
+
+        _diskIsBase = true;
+    }
+
+    /// <summary>Manuelles Laden: verwirft den aktuellen Zustand und stellt den Spielstand her</summary>
+    public bool LoadWorld()
+    {
+        if (!_storage.HasSave) return false;
+
+        _keptModified.Clear();
+        _diskIsBase = true;
+
+        // Alles Geladene verwerfen — danach kommt es frisch von Platte bzw. aus dem Generator
+        foreach (ChunkCoord coord in _chunks.Keys.ToList())
+        {
+            _chunks.Remove(coord);
+            ChunkUnloaded?.Invoke(coord);
+        }
+
+        return true;
     }
 
     private void LoadChunk(ChunkCoord coord)
     {
-        Chunk chunk = _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks)
-            ? new Chunk(coord, WorldHeight, blocks)
-            : new Chunk(coord, WorldHeight);
+        Chunk chunk;
+        if (_keptModified.Remove(coord, out Chunk? kept))
+        {
+            chunk = kept;
+        }
+        else if (_diskIsBase && _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks))
+        {
+            chunk = new Chunk(coord, WorldHeight, blocks);
+        }
+        else
+        {
+            chunk = new Chunk(coord, WorldHeight);
+        }
 
         _chunks.Add(coord, chunk);
 
@@ -126,7 +171,7 @@ public class VoxelWorld
     {
         if (!_chunks.Remove(coord, out Chunk? chunk)) return;
 
-        if (chunk.Modified) _storage.Save(coord, chunk.RawBlocks);
+        if (chunk.Modified) _keptModified[coord] = chunk;
         ChunkUnloaded?.Invoke(coord);
     }
 

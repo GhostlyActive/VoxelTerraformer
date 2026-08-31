@@ -42,6 +42,13 @@ public class PlayerController
         new Vector3(Position.X - HalfWidth, Position.Y, Position.Z - HalfWidth),
         new Vector3(Position.X + HalfWidth, Position.Y + Height, Position.Z + HalfWidth));
 
+    /// <summary>Setzt den Spieler hart um (z. B. nach dem Laden eines Spielstands)</summary>
+    public void Teleport(Vector3 position)
+    {
+        Position = position;
+        _velocity = Vector3.Zero;
+    }
+
     public PlayerController(Vector3 startPos, DebugSettings settings)
     {
         _settings = settings;

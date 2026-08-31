@@ -49,6 +49,13 @@ public class DayNightCycle
     /// <summary>Tageszeit vorspulen (z. B. für Tests oder einen definierten Spielstart)</summary>
     public void AdvanceTime(float seconds) => _timeSeconds += seconds;
 
+    /// <summary>Aktuelle Tageszeit — für Speichern/Laden</summary>
+    public float TimeSeconds
+    {
+        get => _timeSeconds;
+        set => _timeSeconds = value;
+    }
+
     public void Update(float dt)
     {
         // Keys: Z langsamer, U schneller

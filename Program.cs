@@ -20,6 +20,7 @@ public static class Program
 
         Raylib.InitWindow(screenWidth, screenHeight, "Terraformer");
         Raylib.SetTargetFPS(60);
+        Raylib.SetExitKey(KeyboardKey.Null); // ESC gehört dem Pause-Menü, nicht dem Fenster
         if (!smokeTest) Raylib.DisableCursor();
         else Raylib.SetMousePosition(screenWidth / 2, screenHeight / 2); // sonst verdreht das erste Maus-Delta die Testkamera
 
@@ -57,6 +58,7 @@ public static class Program
         world.BlockPlaced += particles.SpawnBlockPlace;
 
         DebugMenu debugMenu = new DebugMenu(settings);
+        PauseMenu pauseMenu = new PauseMenu();
 
         StarField stars = new StarField();
         CloudLayer clouds = new CloudLayer();
@@ -64,43 +66,100 @@ public static class Program
         int smokeFrames = 0;
         bool debugOverlay = smokeTest; // im Testlauf direkt an, damit die Stats auf dem Screenshot stehen
         float elapsedTime = 0f;
+        bool quitRequested = false;
+        bool cursorFree = smokeTest;
+        Camera3D camera = default;
 
-        while (!Raylib.WindowShouldClose())
+        while (!Raylib.WindowShouldClose() && !quitRequested)
         {
             float dt = Raylib.GetFrameTime();
-            elapsedTime += dt;
 
-            if (Raylib.IsKeyPressed(KeyboardKey.F3)) debugOverlay = !debugOverlay;
+            PauseMenuAction menuAction = pauseMenu.Update();
+            switch (menuAction)
+            {
+                case PauseMenuAction.Save:
+                    world.SaveWorld();
+                    storage.SaveMeta(player.Position, dayNight.TimeSeconds);
+                    pauseMenu.Close();
+                    pauseMenu.ShowStatus("World saved");
+                    break;
 
-            debugMenu.Update();
+                case PauseMenuAction.Load:
+                    if (world.LoadWorld())
+                    {
+                        if (storage.TryLoadMeta(out Vector3 savedPosition, out float savedTime))
+                        {
+                            player.Teleport(savedPosition);
+                            dayNight.TimeSeconds = savedTime;
+                        }
+                        world.EnsureAround(player.Position, 3);
+                        pauseMenu.Close();
+                        pauseMenu.ShowStatus("World loaded");
+                    }
+                    else
+                    {
+                        pauseMenu.ShowStatus("No save found");
+                    }
+                    break;
 
-            // Player bewegt sich + liefert Kamera
-            Camera3D camera = player.Update(world, dt);
+                case PauseMenuAction.Quit:
+                    quitRequested = true;
+                    break;
+            }
 
-            // Welt um den Spieler streamen (Budget: max. 2 neue Chunks pro Frame)
-            world.UpdateStreaming(player.Position, 2);
+            bool paused = pauseMenu.IsOpen;
 
-            // Sonne/Mond wandern mit dem Spieler mit — wirken dadurch unendlich fern
-            dayNight.Center = player.Position;
+            // Cursor freigeben, solange das Pause-Menü offen ist
+            if (!smokeTest)
+            {
+                if (paused && !cursorFree)
+                {
+                    Raylib.EnableCursor();
+                    cursorFree = true;
+                }
+                else if (!paused && cursorFree)
+                {
+                    Raylib.DisableCursor();
+                    cursorFree = false;
+                }
+            }
 
-            // Day/Night Update (Speed: Z/U)
-            dayNight.Update(dt);
+            if (!paused)
+            {
+                elapsedTime += dt;
 
-            // Bau-Reichweite mit dem Mausrad einstellen (gilt für Abbauen, Bauen und Hover)
-            float wheel = Raylib.GetMouseWheelMove();
-            if (wheel != 0f)
-                settings.BuildReach = Math.Clamp(settings.BuildReach + wheel, 2f, 60f);
+                if (Raylib.IsKeyPressed(KeyboardKey.F3)) debugOverlay = !debugOverlay;
 
-            // Welt-Interaktion
-            world.Update(camera, player.Bounds, settings.BuildReach);
+                debugMenu.Update();
 
-            // Geänderte Chunks meshen (Worker-Thread) bzw. fertige Meshes hochladen
+                // Player bewegt sich + liefert Kamera
+                camera = player.Update(world, dt);
+
+                // Welt um den Spieler streamen (Budget: max. 2 neue Chunks pro Frame)
+                world.UpdateStreaming(player.Position, 2);
+
+                // Sonne/Mond wandern mit dem Spieler mit — wirken dadurch unendlich fern
+                dayNight.Center = player.Position;
+
+                // Day/Night Update (Speed: Z/U)
+                dayNight.Update(dt);
+
+                // Bau-Reichweite mit dem Mausrad einstellen (gilt für Abbauen, Bauen und Hover)
+                float wheel = Raylib.GetMouseWheelMove();
+                if (wheel != 0f)
+                    settings.BuildReach = Math.Clamp(settings.BuildReach + wheel, 2f, 60f);
+
+                // Welt-Interaktion
+                world.Update(camera, player.Bounds, settings.BuildReach);
+
+                // Partikel laufen über den unbeleuchteten Default-Shader → Weltlicht beim Spawn einbacken
+                Vector3 light = dayNight.AmbientColor + dayNight.SunlightColor * 0.8f;
+                particles.LightScale = Math.Clamp((light.X + light.Y + light.Z) / 3f, 0.15f, 1.1f);
+                particles.Update(world, dt);
+            }
+
+            // Fertige Meshes auch im Pausenzustand hochladen (Worker-Ergebnisse)
             meshManager.Update();
-
-            // Partikel laufen über den unbeleuchteten Default-Shader → Weltlicht beim Spawn einbacken
-            Vector3 light = dayNight.AmbientColor + dayNight.SunlightColor * 0.8f;
-            particles.LightScale = Math.Clamp((light.X + light.Y + light.Z) / 3f, 0.15f, 1.1f);
-            particles.Update(world, dt);
 
             Raylib.BeginDrawing();
 
@@ -135,7 +194,7 @@ public static class Program
             // UI
             Raylib.DrawFPS(10, 10);
             Raylib.DrawText("WASD move | Shift sprint | Space jump | LMB remove | RMB place", 10, 40, 20, Color.Black);
-            Raylib.DrawText("Wheel: build reach | Z/U day speed | F3 debug | M tuning", 10, 65, 20, Color.Black);
+            Raylib.DrawText("Wheel: build reach | Z/U day speed | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
             if (debugOverlay)
@@ -162,6 +221,7 @@ public static class Program
             Raylib.DrawText(reachLabel, cx - reachWidth / 2, reachY, 16, new Color(220, 245, 250, 240));
 
             debugMenu.Draw(Raylib.GetScreenWidth());
+            pauseMenu.Draw(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
 
             Raylib.EndDrawing();
 
@@ -172,7 +232,6 @@ public static class Program
             }
         }
 
-        world.SaveModified();
         settings.Save();
         meshManager.Dispose();
         terrainShader.Unload();
