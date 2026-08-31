@@ -1,34 +1,68 @@
 # VoxelTerraformer
 
-VoxelTerraformer is an experimental voxel world project written in C#, focused on chunk-based terrain, real-time terraforming, and clean, extensible architecture.  
-The project serves as a foundation for exploring voxel rendering, block interaction, and scalable world systems using raylib.
+An experimental voxel engine written in C# with raylib. Build, dig and reshape an
+endless world — and switch how that world looks and feels while you play.
 
-The goal of VoxelTerraformer is not to be a full game, but a flexible sandbox and technical playground for experimenting with voxel engine concepts.
+---
+
+## Three voxel modes, one world
+
+Press **V** to cycle through them. The world data never changes, so switching is
+free and you can go back and forth at any time.
+
+| Mode | Tool | Look |
+| --- | --- | --- |
+| **Blocks** | place and remove whole blocks | classic voxel cubes |
+| **Sculpt** | sphere brush, 8× finer than a block | carve holes and tunnels |
+| **Smooth** | same sphere brush | rounded terrain via marching cubes |
+
+Build a house as blocks, switch to Smooth, and it looks like it was shaped out of
+clay. Switch back and every block is exactly where you left it.
 
 ---
 
 ## Features
 
-- Chunk-based voxel world architecture
-- Real-time block placement and removal
-- Precise voxel raycasting (mouse and keyboard input)
-- Simple procedural terrain generation
-- Clean separation between world logic, rendering, and utilities
-- Designed with scalability and future expansion in mind
+- Endless world that streams in around you, with manual save and load
+- Terrain meshed in the background — building and digging never stalls the frame
+- Ambient occlusion, day/night cycle, distance fog, stars and drifting clouds
+- Sub-voxel collision, so you can walk into the holes you drilled
+- Live tuning menu for movement, gravity and brush settings
 
 ---
 
 ## Controls
 
-- **W / A / S / D** – Move camera
-- **Mouse** – Look around
-- **Left Mouse Button** or **O** – Remove block
-- **Right Mouse Button** or **P** – Place block
+| Key | Action |
+| --- | --- |
+| **W / A / S / D**, Mouse | Move and look |
+| **Shift** | Sprint |
+| **Space** | Jump |
+| **Left / Right Mouse** | Remove / place (hold in Sculpt and Smooth mode) |
+| **Mouse wheel** | Build distance |
+| **Ctrl + Mouse wheel** | Brush size |
+| **V** | Switch voxel mode |
+| **Z / U** | Slower / faster day |
+| **M** | Tuning menu |
+| **F3** | Debug overlay |
+| **ESC** | Pause menu — save, load, quit |
+
+---
+
+## Running it
+
+```
+dotnet run -c Release --project Terraformer.csproj
+```
+
+Release matters: the smooth mode does a lot of number crunching and is several
+times slower in a debug build. Runs on Windows, Linux and macOS.
 
 ---
 
 ## Screenshots
 
-![Image1](Screenshots/Image1.png)
-![Image2](Screenshots/Image2.png)
+The same spot, the same two carved spheres — once in Blocks mode, once in Smooth mode.
 
+![Blocks mode](Screenshots/Image1.png)
+![Smooth mode](Screenshots/Image2.png)
