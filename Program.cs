@@ -74,8 +74,9 @@ public static class Program
             // Welt-Interaktion
             world.Update(camera, player.Bounds);
 
-            // Sky-Platforms: Space in der Luft
-            skyPlatforms.Update(world, player, dt);
+            // Sky-Platforms: Space in der Luft, Q wechselt den Modus
+            Vector3 lookDirection = Vector3.Normalize(camera.Target - camera.Position);
+            skyPlatforms.Update(world, player, lookDirection, dt);
 
             // Geänderte Chunks meshen (Worker-Thread) bzw. fertige Meshes hochladen
             meshManager.Update();
@@ -111,7 +112,7 @@ public static class Program
 
             // UI
             Raylib.DrawFPS(10, 10);
-            Raylib.DrawText("WASD move | Shift sprint | Space jump | Space in air: platform", 10, 40, 20, Color.Black);
+            Raylib.DrawText("WASD move | Shift sprint | Space jump | Space in air: platform | Q mode", 10, 40, 20, Color.Black);
             Raylib.DrawText("LMB remove | RMB place | Z/U day speed | F3 debug", 10, 65, 20, Color.Black);
             Raylib.DrawText(dayNight.SpeedLabel, 10, 90, 20, Color.Black);
 
