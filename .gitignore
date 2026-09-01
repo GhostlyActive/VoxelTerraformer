@@ -50,7 +50,6 @@ TestResults/
 coverage/
 
 # ==============================
-# records
+# Rauchtest
 # ==============================
-demo-frames/
 smoke.png

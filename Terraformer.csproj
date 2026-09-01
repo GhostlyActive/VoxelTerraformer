@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -6,10 +6,23 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Terraformer</RootNamespace>
   </PropertyGroup>
 
+  <!-- Die Engine ist ein eigenes Projekt im Unterordner und darf hier nicht mitkompiliert werden -->
   <ItemGroup>
-    <PackageReference Include="Raylib-cs" Version="7.0.2" />
+    <Compile Remove="Engine/**" />
+    <None Remove="Engine/**" />
+    <EmbeddedResource Remove="Engine/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Engine/Engine.csproj" />
+  </ItemGroup>
+
+  <!-- Assets landen unter Games/<Id>/Assets im Ausgabeordner — genau dort sucht GameContext.AssetPath -->
+  <ItemGroup>
+    <Content Include="Games/**/Assets/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
