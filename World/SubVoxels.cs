@@ -1,11 +1,14 @@
 namespace Terraformer.World;
 
 /// <summary>
-/// Bit-Helfer für die Sub-Voxel-Masken des Sculpt-Modus: 8 Teilungen pro Achse
-/// = 512 Sub-Voxel pro Block (12,5 cm bei 1-m-Blöcken), als ulong[8] gespeichert.
-/// Ein Vollblock entspricht der vollen Maske, Luft der leeren — gespeichert wird
-/// eine Maske nur für tatsächlich angeschnitzte Blöcke. Masken sind Copy-on-Write:
-/// einmal im Chunk abgelegt, werden sie nie mehr mutiert (Worker-Threads lesen sie).
+/// Dichtefeld eines bearbeiteten Blocks: 8 Teilungen pro Achse = 512 Zellen à 12,5 cm,
+/// je ein Byte Füllgrad (0 = Luft, 255 = massiv). Ab <see cref="Iso"/> gilt eine Zelle
+/// als fest — daran hängen Kollision, Raycast und die kantigen Modi. Marching Cubes nutzt
+/// zusätzlich die Zwischenwerte und zieht die Fläche exakt dort, wo der Füllgrad Iso
+/// kreuzt; daher die runden Formen im Smooth-Modus.
+/// Ein Vollblock entspricht dem vollen Feld, Luft dem leeren — gespeichert wird ein Feld
+/// nur für tatsächlich bearbeitete Blöcke. Felder sind Copy-on-Write: einmal im Chunk
+/// abgelegt, werden sie nie mehr mutiert (Worker-Threads lesen sie).
 /// </summary>
 public static class SubVoxels
 {
@@ -14,83 +17,86 @@ public static class SubVoxels
     public const int Shift = 3;
     public const int LowMask = Divisions - 1;
     public const float CellSize = 1f / Divisions;
-    public const int WordCount = Divisions * Divisions * Divisions / 64;
+    public const int CellCount = Divisions * Divisions * Divisions;
 
-    public static int BitIndex(int sx, int sy, int sz) => sx + Divisions * (sy + Divisions * sz);
+    /// <summary>Ab diesem Füllgrad ist eine Zelle fest — derselbe Schwellwert, den Marching Cubes als Fläche zieht</summary>
+    public const byte Iso = 128;
 
-    public static bool HasBit(ulong[] mask, int sx, int sy, int sz)
+    /// <summary>
+    /// Füllgrade darunter werden auf 0 gerundet. Ohne das bliebe vom weichen Pinselrand
+    /// überall ein Hauch Dichte stehen und ausgehöhlte Blöcke würden nie wieder zu Luft.
+    /// </summary>
+    public const byte Epsilon = 6;
+
+    public static int CellIndex(int sx, int sy, int sz) => sx + Divisions * (sy + Divisions * sz);
+
+    public static byte Get(byte[] field, int sx, int sy, int sz) => field[CellIndex(sx, sy, sz)];
+
+    public static bool IsSolid(byte[] field, int sx, int sy, int sz) => field[CellIndex(sx, sy, sz)] >= Iso;
+
+    public static void Set(byte[] field, int sx, int sy, int sz, float value)
+        => field[CellIndex(sx, sy, sz)] = Quantize(value);
+
+    public static byte Quantize(float value)
     {
-        int bit = BitIndex(sx, sy, sz);
-        return (mask[bit >> 6] & (1UL << (bit & 63))) != 0;
+        if (value < Epsilon) return 0;
+        return value >= 255f ? (byte)255 : (byte)(value + 0.5f);
     }
 
-    public static void SetBit(ulong[] mask, int sx, int sy, int sz)
+    public static bool IsEmpty(byte[] field)
     {
-        int bit = BitIndex(sx, sy, sz);
-        mask[bit >> 6] |= 1UL << (bit & 63);
-    }
-
-    public static void ClearBit(ulong[] mask, int sx, int sy, int sz)
-    {
-        int bit = BitIndex(sx, sy, sz);
-        mask[bit >> 6] &= ~(1UL << (bit & 63));
-    }
-
-    public static bool IsEmpty(ulong[] mask)
-    {
-        foreach (ulong word in mask)
-            if (word != 0) return false;
+        foreach (byte cell in field)
+            if (cell != 0) return false;
         return true;
     }
 
-    public static bool IsFull(ulong[] mask)
+    public static bool IsFull(byte[] field)
     {
-        foreach (ulong word in mask)
-            if (word != ulong.MaxValue) return false;
+        foreach (byte cell in field)
+            if (cell != 255) return false;
         return true;
     }
 
-    public static ulong[] NewEmpty() => new ulong[WordCount];
+    public static byte[] NewEmpty() => new byte[CellCount];
 
-    public static ulong[] NewFull()
+    public static byte[] NewFull()
     {
-        var mask = new ulong[WordCount];
-        Array.Fill(mask, ulong.MaxValue);
-        return mask;
+        var field = new byte[CellCount];
+        Array.Fill(field, (byte)255);
+        return field;
     }
 
-    /// <summary>Ist die Randschicht Richtung faceIndex komplett gefüllt? (Face-Reihenfolge des Meshers: +Y,-Y,+X,-X,+Z,-Z; opposite(f) == f ^ 1)</summary>
-    public static bool LayerFull(ulong[] mask, int faceIndex)
+    /// <summary>Ist die Randschicht Richtung faceIndex durchgehend fest? (Face-Reihenfolge des Meshers: +Y,-Y,+X,-X,+Z,-Z; opposite(f) == f ^ 1)</summary>
+    public static bool LayerFull(byte[] field, int faceIndex)
     {
-        ulong[] layer = _faceLayers[faceIndex];
-        for (int word = 0; word < WordCount; word++)
-            if ((mask[word] & layer[word]) != layer[word]) return false;
+        foreach (int cell in _faceLayers[faceIndex])
+            if (field[cell] < Iso) return false;
         return true;
     }
 
-    private static readonly ulong[][] _faceLayers = BuildFaceLayers();
+    private static readonly int[][] _faceLayers = BuildFaceLayers();
 
-    private static ulong[][] BuildFaceLayers()
+    private static int[][] BuildFaceLayers()
     {
-        var layers = new ulong[6][];
-        for (int face = 0; face < 6; face++) layers[face] = new ulong[WordCount];
+        var layers = new List<int>[6];
+        for (int face = 0; face < 6; face++) layers[face] = new List<int>(Divisions * Divisions);
 
         for (int sz = 0; sz < Divisions; sz++)
         for (int sy = 0; sy < Divisions; sy++)
         for (int sx = 0; sx < Divisions; sx++)
         {
-            int bit = BitIndex(sx, sy, sz);
-            int word = bit >> 6;
-            ulong flag = 1UL << (bit & 63);
+            int cell = CellIndex(sx, sy, sz);
 
-            if (sy == Divisions - 1) layers[0][word] |= flag; // +Y
-            if (sy == 0) layers[1][word] |= flag;             // -Y
-            if (sx == Divisions - 1) layers[2][word] |= flag; // +X
-            if (sx == 0) layers[3][word] |= flag;             // -X
-            if (sz == Divisions - 1) layers[4][word] |= flag; // +Z
-            if (sz == 0) layers[5][word] |= flag;             // -Z
+            if (sy == Divisions - 1) layers[0].Add(cell); // +Y
+            if (sy == 0) layers[1].Add(cell);             // -Y
+            if (sx == Divisions - 1) layers[2].Add(cell); // +X
+            if (sx == 0) layers[3].Add(cell);             // -X
+            if (sz == Divisions - 1) layers[4].Add(cell); // +Z
+            if (sz == 0) layers[5].Add(cell);             // -Z
         }
 
-        return layers;
+        var result = new int[6][];
+        for (int face = 0; face < 6; face++) result[face] = layers[face].ToArray();
+        return result;
     }
 }

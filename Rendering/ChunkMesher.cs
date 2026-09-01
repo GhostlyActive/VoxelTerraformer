@@ -46,7 +46,7 @@ public static class ChunkMesher
     private static readonly int[] _quadOrder = { 0, 1, 2, 0, 2, 3 };
     private static readonly int[] _quadOrderFlipped = { 1, 2, 3, 1, 3, 0 };
 
-    public static ChunkMeshData Build(byte[] padded, Dictionary<int, ulong[]> refinements, int worldHeight, int worldX, int worldZ)
+    public static ChunkMeshData Build(byte[] padded, Dictionary<int, byte[]> refinements, int worldHeight, int worldX, int worldZ)
     {
         var vertices = new List<float>(24576);
         var normals = new List<float>(24576);
@@ -59,7 +59,7 @@ public static class ChunkMesher
             int id = padded[Index(x, y, z)];
             if (!BlockRegistry.IsSolid(id)) continue;
 
-            bool refined = refinements.TryGetValue(Index(x, y, z), out ulong[]? ownMask);
+            bool refined = refinements.TryGetValue(Index(x, y, z), out byte[]? ownField);
 
             if (!refined)
             {
@@ -78,7 +78,7 @@ public static class ChunkMesher
 
             if (refined)
             {
-                EmitRefinedBlock(vertices, normals, colors, padded, refinements, x, y, z, ownMask!, albedo, emissive);
+                EmitRefinedBlock(vertices, normals, colors, padded, refinements, x, y, z, ownField!, albedo, emissive);
                 continue;
             }
 
@@ -101,14 +101,14 @@ public static class ChunkMesher
     }
 
     // Ein Nachbar verdeckt eine Fläche nur, wenn er solide ist UND seine zugewandte
-    // Sub-Voxel-Randschicht komplett gefüllt ist (Vollblöcke sind implizit voll)
-    private static bool NeighborOccludes(byte[] padded, Dictionary<int, ulong[]> refinements, int nx, int ny, int nz, int faceIndex)
+    // Sub-Voxel-Randschicht durchgehend fest ist (Vollblöcke sind implizit voll)
+    private static bool NeighborOccludes(byte[] padded, Dictionary<int, byte[]> refinements, int nx, int ny, int nz, int faceIndex)
     {
         int index = Index(nx, ny, nz);
         if (!BlockRegistry.IsSolid(padded[index])) return false;
-        if (!refinements.TryGetValue(index, out ulong[]? mask)) return true;
+        if (!refinements.TryGetValue(index, out byte[]? field)) return true;
 
-        return SubVoxels.LayerFull(mask!, faceIndex ^ 1);
+        return SubVoxels.LayerFull(field!, faceIndex ^ 1);
     }
 
     private static void EmitRefinedBlock(
@@ -116,9 +116,9 @@ public static class ChunkMesher
         List<float> normals,
         List<byte> colors,
         byte[] padded,
-        Dictionary<int, ulong[]> refinements,
+        Dictionary<int, byte[]> refinements,
         int x, int y, int z,
-        ulong[] mask,
+        byte[] field,
         Color albedo,
         byte emissive)
     {
@@ -126,7 +126,7 @@ public static class ChunkMesher
         for (int sy = 0; sy < SubVoxels.Divisions; sy++)
         for (int sx = 0; sx < SubVoxels.Divisions; sx++)
         {
-            if (!SubVoxels.HasBit(mask, sx, sy, sz)) continue;
+            if (!SubVoxels.IsSolid(field, sx, sy, sz)) continue;
 
             for (int f = 0; f < _faces.Length; f++)
             {
@@ -141,7 +141,7 @@ public static class ChunkMesher
                     nsy >= 0 && nsy < SubVoxels.Divisions &&
                     nsz >= 0 && nsz < SubVoxels.Divisions)
                 {
-                    occluded = SubVoxels.HasBit(mask, nsx, nsy, nsz);
+                    occluded = SubVoxels.IsSolid(field, nsx, nsy, nsz);
                 }
                 else
                 {
@@ -151,14 +151,14 @@ public static class ChunkMesher
                     {
                         occluded = false;
                     }
-                    else if (!refinements.TryGetValue(index, out ulong[]? neighborMask))
+                    else if (!refinements.TryGetValue(index, out byte[]? neighborField))
                     {
                         occluded = true; // Vollblock
                     }
                     else
                     {
-                        occluded = SubVoxels.HasBit(
-                            neighborMask!,
+                        occluded = SubVoxels.IsSolid(
+                            neighborField!,
                             (nsx + SubVoxels.Divisions) & SubVoxels.LowMask,
                             (nsy + SubVoxels.Divisions) & SubVoxels.LowMask,
                             (nsz + SubVoxels.Divisions) & SubVoxels.LowMask);

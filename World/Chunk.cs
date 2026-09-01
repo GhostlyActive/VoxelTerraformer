@@ -9,10 +9,10 @@ public class Chunk
     // Layout: x + Size * (z + Size * y)
     private readonly byte[] _blocks;
 
-    // Sculpt-Modus: Sub-Voxel-Maske je angeschnitztem Block (Key = Index).
-    // Invarianten: Luft hat keinen Eintrag, volle Maske wird nicht gespeichert (= Vollblock).
-    // Die Masken-Arrays sind Copy-on-Write — nie in-place ändern (Worker-Threads lesen sie).
-    private readonly Dictionary<int, ulong[]> _refinements;
+    // Sculpt-/Smooth-Modus: Sub-Voxel-Dichtefeld je bearbeitetem Block (Key = Index).
+    // Invarianten: Luft hat keinen Eintrag, ein volles Feld wird nicht gespeichert (= Vollblock).
+    // Die Felder sind Copy-on-Write — nie in-place ändern (Worker-Threads lesen sie).
+    private readonly Dictionary<int, byte[]> _refinements;
 
     public readonly ChunkCoord Coord;
     public readonly Vector3 WorldPosition;
@@ -20,11 +20,11 @@ public class Chunk
     /// <summary>True, sobald der Chunk seit Generierung/Laden verändert wurde → muss gespeichert werden</summary>
     public bool Modified { get; private set; }
 
-    public Chunk(ChunkCoord coord, int worldHeight, byte[]? loadedBlocks = null, Dictionary<int, ulong[]>? loadedRefinements = null)
+    public Chunk(ChunkCoord coord, int worldHeight, byte[]? loadedBlocks = null, Dictionary<int, byte[]>? loadedRefinements = null)
     {
         Coord = coord;
         WorldPosition = new Vector3(coord.X * Size, 0, coord.Z * Size);
-        _refinements = loadedRefinements ?? new Dictionary<int, ulong[]>();
+        _refinements = loadedRefinements ?? new Dictionary<int, byte[]>();
 
         if (loadedBlocks != null)
         {
@@ -53,29 +53,29 @@ public class Chunk
         if (!InBounds(x, y, z, worldHeight)) return;
         int index = Index(x, y, z);
         _blocks[index] = (byte)Math.Clamp(id, 0, 255);
-        _refinements.Remove(index); // Blockwechsel verwirft Sub-Voxel-Details
+        _refinements.Remove(index); // Blockwechsel verwirft das Dichtefeld
         Modified = true;
     }
 
-    public bool TryGetRefinement(int x, int y, int z, int worldHeight, out ulong[] mask)
+    public bool TryGetRefinement(int x, int y, int z, int worldHeight, out byte[] field)
     {
-        mask = null!;
+        field = null!;
         if (!InBounds(x, y, z, worldHeight)) return false;
-        return _refinements.TryGetValue(Index(x, y, z), out mask!);
+        return _refinements.TryGetValue(Index(x, y, z), out field!);
     }
 
-    public void SetRefinement(int x, int y, int z, ulong[] mask, int worldHeight)
+    public void SetRefinement(int x, int y, int z, byte[] field, int worldHeight)
     {
         if (!InBounds(x, y, z, worldHeight)) return;
         int index = Index(x, y, z);
 
-        if (SubVoxels.IsEmpty(mask) || SubVoxels.IsFull(mask)) _refinements.Remove(index);
-        else _refinements[index] = mask;
+        if (SubVoxels.IsEmpty(field) || SubVoxels.IsFull(field)) _refinements.Remove(index);
+        else _refinements[index] = field;
 
         Modified = true;
     }
 
-    internal IReadOnlyDictionary<int, ulong[]> Refinements => _refinements;
+    internal IReadOnlyDictionary<int, byte[]> Refinements => _refinements;
 
     internal static (int X, int Y, int Z) DecodeIndex(int index)
     {

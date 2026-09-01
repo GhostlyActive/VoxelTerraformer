@@ -1,58 +1,100 @@
 using Raylib_cs;
 using System.Numerics;
-using Terraformer.World;
 
 namespace Terraformer.Rendering;
 
 /// <summary>
-/// Blockige, halbtransparente Wolkenschicht über der Welt, driftet langsam nach Osten.
-/// Das Muster kommt aus einem Hash pro Zelle; die Schicht verschiebt sich zellenweise nahtlos.
+/// Wolkenschicht aus Voxeln: jede belegte Zelle des Himmelrasters wird zu einem Klumpen
+/// aus Würfeln, deren Form aus einem Ellipsoid mit Hash-Rauschen kommt — dadurch runde,
+/// unregelmäßige Wolken statt sichtbarer Kacheln. Die Schicht driftet nach Osten und
+/// verschiebt sich zellenweise nahtlos.
 /// </summary>
 public sealed class CloudLayer
 {
-    private const float CellSize = 8f;
-    private const float CloudY = 80f;
-    private const float Thickness = 3f;
-    private const float DriftSpeed = 1.2f;   // Blöcke pro Sekunde
-    private const float Coverage = 0.32f;
-    private const float Range = 260f;        // bis hinter das Fog-Ende, zieht mit dem Spieler mit
+    private const float CellSize = 24f;
+    private const float CubeSize = 4f;       // Voxelgröße der Wolken
+    private const int BlobX = 6;             // Würfel je Achse im Klumpen
+    private const int BlobY = 3;
+    private const int BlobZ = 6;
+    private const float Range = 250f;        // bis hinter das Fog-Ende, zieht mit dem Spieler mit
 
-    public void Draw(float time, float daylight01, Vector3 center)
+    public float Coverage { get; set; } = 0.35f;
+    public float Height { get; set; } = 80f;
+    public float DriftSpeed { get; set; } = 1.2f;   // Blöcke pro Sekunde
+
+    public void Draw(Camera3D camera, float time, float daylight01, Vector3 center)
     {
         // tagsüber fast weiß, nachts dunkles Blaugrau
-        Color color = Lerp(
-            new Color(85, 95, 120, 110),
-            new Color(250, 250, 255, 150),
-            daylight01);
+        Color color = Lerp(new Color(88, 98, 126, 255), new Color(250, 250, 255, 255), daylight01);
 
         float offset = time * DriftSpeed / CellSize;
         int shift = (int)MathF.Floor(offset);
         float slide = (offset - shift) * CellSize;
+
+        Vector3 forward = Vector3.Normalize(camera.Target - camera.Position);
 
         int minX = (int)MathF.Floor((center.X - Range) / CellSize) - 1;
         int maxX = (int)MathF.Floor((center.X + Range) / CellSize);
         int minZ = (int)MathF.Floor((center.Z - Range) / CellSize);
         int maxZ = (int)MathF.Floor((center.Z + Range) / CellSize);
 
+        var cube = new Vector3(CubeSize);
+
         for (int cz = minZ; cz <= maxZ; cz++)
         for (int cx = minX; cx <= maxX; cx++)
         {
-            if (Hash(cx - shift, cz) > Coverage) continue;
+            if (Hash(cx - shift, cz, 0) > Coverage) continue;
 
-            var cloudCenter = new Vector3(
+            var cellCenter = new Vector3(
                 cx * CellSize + CellSize / 2f + slide,
-                CloudY,
+                Height,
                 cz * CellSize + CellSize / 2f);
 
-            Raylib.DrawCubeV(cloudCenter, new Vector3(CellSize - 0.6f, Thickness, CellSize - 0.6f), color);
+            // Was klar hinter der Kamera liegt, kostet sonst nur Würfel ohne Bild
+            Vector3 toCell = cellCenter - camera.Position;
+            if (toCell.LengthSquared() > CellSize * CellSize && Vector3.Dot(toCell, forward) < 0f) continue;
+
+            DrawBlob(cellCenter, cx - shift, cz, color, cube);
         }
     }
 
-    private static float Hash(int x, int z)
+    /// <summary>Ein Klumpen: Würfel innerhalb eines Ellipsoids, dessen Rand per Hash ausgefranst wird</summary>
+    private static void DrawBlob(Vector3 cellCenter, int hx, int hz, Color color, Vector3 cube)
+    {
+        // Jede Wolke bekommt eigene Proportionen, sonst wiederholt sich die Form zu deutlich
+        float stretchX = 0.75f + Hash(hx, hz, 91) * 0.55f;
+        float stretchZ = 0.75f + Hash(hx, hz, 92) * 0.55f;
+
+        for (int iy = 0; iy < BlobY; iy++)
+        for (int iz = 0; iz < BlobZ; iz++)
+        for (int ix = 0; ix < BlobX; ix++)
+        {
+            // -1..1 relativ zur Klumpenmitte
+            float nx = (ix - (BlobX - 1) / 2f) / (BlobX / 2f) / stretchX;
+            float ny = (iy - (BlobY - 1) / 2f) / (BlobY / 2f);
+            float nz = (iz - (BlobZ - 1) / 2f) / (BlobZ / 2f) / stretchZ;
+
+            // Unterseite flacher als die Oberseite — so sitzen Wolken auf einer Basis auf
+            float squash = ny < 0f ? 1.5f : 1f;
+            float distance = nx * nx + (ny * squash) * (ny * squash) + nz * nz;
+
+            float threshold = 0.75f + Hash(hx, hz, ix + BlobX * (iy + BlobY * iz) + 7) * 0.45f;
+            if (distance > threshold) continue;
+
+            var position = new Vector3(
+                cellCenter.X + (ix - (BlobX - 1) / 2f) * CubeSize,
+                cellCenter.Y + (iy - (BlobY - 1) / 2f) * CubeSize,
+                cellCenter.Z + (iz - (BlobZ - 1) / 2f) * CubeSize);
+
+            Raylib.DrawCubeV(position, cube, color);
+        }
+    }
+
+    private static float Hash(int x, int z, int salt)
     {
         unchecked
         {
-            int h = x * 374761393 + z * 668265263;
+            int h = x * 374761393 + z * 668265263 + salt * unchecked((int)2246822519);
             h = (h ^ (h >> 13)) * 1274126177;
             h ^= h >> 16;
             return (h & 0x7fffffff) / 2147483647f;

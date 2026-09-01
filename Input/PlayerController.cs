@@ -23,9 +23,8 @@ public class PlayerController
     private readonly DebugSettings _settings;
 
     // FOV zieht beim Sprinten leicht auf — verkauft das Tempo spürbar
-    private const float BaseFov = 60f;
-    private const float SprintFov = 66f;
-    private float _fov = BaseFov;
+    private const float SprintFovBoost = 6f;
+    private float _fov;
 
     // Sprung-Feel: kurz nach Kantenabgang darf noch gesprungen werden (Coyote),
     // und ein knapp zu früher Druck wird bis zur Landung gepuffert
@@ -107,20 +106,45 @@ public class PlayerController
         MoveAndCollide(world, dt);
 
         // Build camera from player
-        float targetFov = sprinting ? SprintFov : BaseFov;
+        float targetFov = _settings.FieldOfView + (sprinting ? SprintFovBoost : 0f);
+        if (_fov <= 0f) _fov = targetFov; // erster Frame: nicht aus dem Nichts hochziehen
         _fov += (targetFov - _fov) * Math.Min(1f, 10f * dt);
 
+        return BuildCamera();
+    }
+
+    /// <summary>Kamera zur aktuellen Position und Blickrichtung, ohne Physik — für gescriptete Aufnahmen</summary>
+    public Camera3D CameraOnly()
+    {
+        if (_fov <= 0f) _fov = _settings.FieldOfView;
+        return BuildCamera();
+    }
+
+    /// <summary>Blick auf einen Weltpunkt ausrichten (Demo-Ablauf statt Maus)</summary>
+    public void PointAt(Vector3 target)
+    {
         Vector3 eye = Position + new Vector3(0, EyeHeight, 0);
-        Vector3 dir = LookDirection();
-        Camera3D cam = new Camera3D
+        Vector3 direction = target - eye;
+
+        float horizontal = MathF.Sqrt(direction.X * direction.X + direction.Z * direction.Z);
+        if (horizontal < 1e-4f && MathF.Abs(direction.Y) < 1e-4f) return;
+
+        _yaw = MathF.Atan2(direction.X, direction.Z) * (180f / MathF.PI);
+        _pitch = Math.Clamp(MathF.Atan2(direction.Y, horizontal) * (180f / MathF.PI), -89f, 89f);
+    }
+
+    private Camera3D BuildCamera()
+    {
+        Vector3 eye = Position + new Vector3(0, EyeHeight, 0);
+
+        return new Camera3D
         {
             Position = eye,
-            Target = eye + dir,
+            Target = eye + LookDirection(),
             Up = Vector3.UnitY,
             FovY = _fov,
             Projection = CameraProjection.Perspective
         };
-        return cam;
     }
 
     private void UpdateLook(float dt)
@@ -206,14 +230,14 @@ public class PlayerController
         {
             if (!BlockRegistry.IsSolid(world.GetBlock(x, y, z))) continue;
 
-            if (world.TryGetRefinement(x, y, z, out ulong[] mask))
+            if (world.TryGetRefinement(x, y, z, out byte[] field))
             {
                 const float cell = SubVoxels.CellSize;
                 for (int sz = 0; sz < SubVoxels.Divisions; sz++)
                 for (int sy = 0; sy < SubVoxels.Divisions; sy++)
                 for (int sx = 0; sx < SubVoxels.Divisions; sx++)
                 {
-                    if (!SubVoxels.HasBit(mask, sx, sy, sz)) continue;
+                    if (!SubVoxels.IsSolid(field, sx, sy, sz)) continue;
                     AccumulateBox(in pos, x + sx * cell, y + sy * cell, z + sz * cell, cell, axis,
                         ref hit, ref minBound, ref maxBound);
                 }

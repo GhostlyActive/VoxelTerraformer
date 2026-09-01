@@ -19,7 +19,7 @@ public sealed class ChunkMeshManager : IDisposable
         public bool HasMesh;
     }
 
-    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, ulong[]> Refinements, int WorldX, int WorldZ, int Generation, bool Smooth);
+    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, byte[]> Refinements, int WorldX, int WorldZ, int Generation, bool Smooth);
     private readonly record struct MeshResult(ChunkCoord Coord, ChunkMeshData Data, int Generation, bool Smooth);
 
     private readonly VoxelWorld _world;
@@ -89,7 +89,7 @@ public sealed class ChunkMeshManager : IDisposable
         foreach (Chunk chunk in _world.Chunks)
         {
             byte[] padded = RentSnapshot(chunk);
-            Dictionary<int, ulong[]> refinements = SnapshotRefinements(chunk);
+            Dictionary<int, byte[]> refinements = SnapshotRefinements(chunk);
             int worldX = (int)chunk.WorldPosition.X;
             int worldZ = (int)chunk.WorldPosition.Z;
 
@@ -186,16 +186,16 @@ public sealed class ChunkMeshManager : IDisposable
         return padded;
     }
 
-    // Sub-Voxel-Masken des Chunks (auf Padded-Indizes umgeschlüsselt) plus die der
+    // Sub-Voxel-Dichtefelder des Chunks (auf Padded-Indizes umgeschlüsselt) plus die der
     // direkt angrenzenden Nachbarblöcke — fürs Sub-Culling an den Chunk-Grenzen
-    private Dictionary<int, ulong[]> SnapshotRefinements(Chunk chunk)
+    private Dictionary<int, byte[]> SnapshotRefinements(Chunk chunk)
     {
-        var refinements = new Dictionary<int, ulong[]>();
+        var refinements = new Dictionary<int, byte[]>();
 
-        foreach ((int index, ulong[] mask) in chunk.Refinements)
+        foreach ((int index, byte[] field) in chunk.Refinements)
         {
             (int x, int y, int z) = Chunk.DecodeIndex(index);
-            refinements[ChunkMesher.Index(x, y, z)] = mask;
+            refinements[ChunkMesher.Index(x, y, z)] = field;
         }
 
         int baseX = (int)chunk.WorldPosition.X;
@@ -222,10 +222,10 @@ public sealed class ChunkMeshManager : IDisposable
         return refinements;
     }
 
-    private void AddBorderRefinement(Dictionary<int, ulong[]> refinements, int wx, int wy, int wz, int lx, int ly, int lz)
+    private void AddBorderRefinement(Dictionary<int, byte[]> refinements, int wx, int wy, int wz, int lx, int ly, int lz)
     {
-        if (_world.TryGetRefinement(wx, wy, wz, out ulong[] mask))
-            refinements[ChunkMesher.Index(lx, ly, lz)] = mask;
+        if (_world.TryGetRefinement(wx, wy, wz, out byte[] field))
+            refinements[ChunkMesher.Index(lx, ly, lz)] = field;
     }
 
     private void Upload(ChunkCoord coord, ChunkMeshData data)

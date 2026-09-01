@@ -3,6 +3,8 @@
 An experimental voxel engine written in C# with raylib. Build, dig and reshape an
 endless world — and switch how that world looks and feels while you play.
 
+![Rocket launch, impact crater, and the same crater in Blocks and Smooth mode](Screenshots/demo.gif)
+
 ---
 
 ## Three voxel modes, one world

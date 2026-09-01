@@ -5,10 +5,11 @@ using Terraformer.World;
 namespace Terraformer.Rendering;
 
 /// <summary>
-/// Dritte Voxel-Stufe: Marching Cubes über einem Dichtefeld, das aus den binären
-/// Sub-Voxeln abgeleitet wird (Box-Filter). Ergebnis ist eine runde, glatte Oberfläche
-/// mit weichen Normalen aus dem Dichtegradienten — die Weltdaten bleiben unverändert,
-/// deshalb ist das Umschalten zwischen den Modi verlustfrei.
+/// Dritte Voxel-Stufe: Marching Cubes über dem Sub-Voxel-Dichtefeld, geglättet mit einem
+/// Box-Filter. Weil die Zellen echte Füllgrade tragen und nicht nur an/aus, landet die
+/// Iso-Fläche zwischen zwei Gitterpunkten an der exakten Stelle — daraus entstehen runde
+/// Formen statt Treppen. Weiche Normalen kommen aus dem Dichtegradienten. Die Weltdaten
+/// bleiben unverändert, deshalb ist das Umschalten zwischen den Modi verlustfrei.
 /// </summary>
 public static class SmoothChunkMesher
 {
@@ -21,7 +22,7 @@ public static class SmoothChunkMesher
 
     private const int SubPerCell = SubVoxels.Divisions / Divisions;
     private const float CellSize = 1f / Divisions;
-    private const float Iso = 0.5f;
+    private const float Iso = SubVoxels.Iso / 255f;
 
     // Dichtegitter je Block: Indizes -1 .. Divisions+1 (ein Ring extra für die Gradienten)
     private const int GridSize = Divisions + 3;
@@ -29,7 +30,7 @@ public static class SmoothChunkMesher
 
     public static ChunkMeshData Build(
         byte[] padded,
-        Dictionary<int, ulong[]> refinements,
+        Dictionary<int, byte[]> refinements,
         int worldHeight,
         int worldX,
         int worldZ)
@@ -40,7 +41,8 @@ public static class SmoothChunkMesher
 
         var neighborId = new byte[27];
         var neighborSolid = new bool[27];
-        var neighborMask = new ulong[27][];
+        var neighborField = new byte[27][];
+        var axisSpan = new AxisSpan[GridSize];
         var density = new float[GridSize * GridSize * GridSize];
 
         Span<float> cornerDensity = stackalloc float[8];
@@ -52,10 +54,11 @@ public static class SmoothChunkMesher
         for (int z = 0; z < Chunk.Size; z++)
         for (int x = 0; x < Chunk.Size; x++)
         {
-            if (!GatherNeighborhood(padded, refinements, x, y, z, neighborId, neighborSolid, neighborMask))
+            if (!GatherNeighborhood(padded, refinements, x, y, z, neighborId, neighborSolid, neighborField, out bool anyRefined))
                 continue;
 
-            BuildDensity(neighborSolid, neighborMask, density);
+            if (anyRefined) BuildDensity(neighborSolid, neighborField, density);
+            else BuildBlockDensity(neighborSolid, axisSpan, density);
 
             (Color albedo, byte emissive) = SurfaceMaterial(neighborId, neighborSolid, x, y, z, worldX, worldZ);
 
@@ -158,19 +161,21 @@ public static class SmoothChunkMesher
     }
 
     /// <summary>
-    /// Blocktypen und Sub-Voxel-Masken der 3x3x3-Nachbarschaft einsammeln.
+    /// Blocktypen und Sub-Voxel-Dichtefelder der 3x3x3-Nachbarschaft einsammeln.
     /// Liefert false, wenn hier keine Oberfläche verlaufen kann (alles voll oder alles leer).
     /// </summary>
     private static bool GatherNeighborhood(
         byte[] padded,
-        Dictionary<int, ulong[]> refinements,
+        Dictionary<int, byte[]> refinements,
         int x, int y, int z,
         byte[] neighborId,
         bool[] neighborSolid,
-        ulong[]?[] neighborMask)
+        byte[]?[] neighborField,
+        out bool anyRefined)
     {
         bool anySolid = false;
         bool anyOpen = false;
+        anyRefined = false;
 
         for (int dz = -1; dz <= 1; dz++)
         for (int dy = -1; dy <= 1; dy++)
@@ -184,15 +189,16 @@ public static class SmoothChunkMesher
 
             neighborId[slot] = id;
             neighborSolid[slot] = isSolid;
-            neighborMask[slot] = null;
+            neighborField[slot] = null;
 
             if (isSolid)
             {
                 anySolid = true;
-                if (refinements.TryGetValue(index, out ulong[]? mask))
+                if (refinements.TryGetValue(index, out byte[]? field))
                 {
-                    neighborMask[slot] = mask;
-                    anyOpen = true; // angeschnitzt → enthält auch Leerraum
+                    neighborField[slot] = field;
+                    anyOpen = true;    // bearbeitet → enthält auch Leerraum
+                    anyRefined = true;
                 }
             }
             else
@@ -205,17 +211,13 @@ public static class SmoothChunkMesher
     }
 
     /// <summary>
-    /// Dichte an jedem Gitterpunkt = Mittel der 2x2x2 umliegenden Sub-Voxel.
-    /// Rein positionsabhängig, deshalb stimmen benachbarte Blöcke an ihren Grenzen überein.
-    /// </summary>
-    /// <summary>
     /// Dichte an jedem Gitterpunkt = Mittel der SubPerCell³ umliegenden Sub-Voxel.
     /// Die Boxen benachbarter Gitterpunkte kacheln lückenlos, jedes Sub-Voxel zählt also genau einmal.
     /// Rein positionsabhängig, deshalb stimmen benachbarte Blöcke an ihren Grenzen überein.
     /// </summary>
-    private static void BuildDensity(bool[] neighborSolid, ulong[]?[] neighborMask, float[] density)
+    private static void BuildDensity(bool[] neighborSolid, byte[]?[] neighborField, float[] density)
     {
-        const float inverseTaps = 1f / (SubPerCell * SubPerCell * SubPerCell);
+        const float inverseTaps = 1f / (SubPerCell * SubPerCell * SubPerCell * 255f);
 
         for (int gz = -GridOffset; gz < GridSize - GridOffset; gz++)
         for (int gy = -GridOffset; gy < GridSize - GridOffset; gy++)
@@ -229,23 +231,88 @@ public static class SmoothChunkMesher
             for (int oz = -SubPerCell / 2; oz < SubPerCell / 2; oz++)
             for (int oy = -SubPerCell / 2; oy < SubPerCell / 2; oy++)
             for (int ox = -SubPerCell / 2; ox < SubPerCell / 2; ox++)
-                sum += Occupancy(neighborSolid, neighborMask, sx + ox, sy + oy, sz + oz);
+                sum += Fill(neighborSolid, neighborField, sx + ox, sy + oy, sz + oz);
 
             density[GridIndex(gx, gy, gz)] = sum * inverseTaps;
         }
     }
 
-    /// <summary>1 = solide, 0 = leer; Koordinaten sind block-lokale Sub-Voxel (dürfen in die Nachbarblöcke reichen)</summary>
-    private static int Occupancy(bool[] neighborSolid, ulong[]?[] neighborMask, int sx, int sy, int sz)
+    /// <summary>
+    /// Schneller Weg für Nachbarschaften ganz ohne Dichtefeld — also für den weitaus größten
+    /// Teil der Welt. Dort ist jeder Block ganz voll oder ganz leer, der Box-Filter braucht
+    /// die 64 Einzelabtastungen also nicht: es genügt, wie viele davon je Achse in welchen
+    /// Nachbarblock fallen. Das Ergebnis ist bitgleich zu <see cref="BuildDensity"/>.
+    /// </summary>
+    private static void BuildBlockDensity(bool[] neighborSolid, AxisSpan[] axisSpan, float[] density)
+    {
+        const float inverseTaps = 1f / (SubPerCell * SubPerCell * SubPerCell);
+
+        for (int g = -GridOffset; g < GridSize - GridOffset; g++)
+            axisSpan[g + GridOffset] = SpanFor(g);
+
+        for (int gz = -GridOffset; gz < GridSize - GridOffset; gz++)
+        for (int gy = -GridOffset; gy < GridSize - GridOffset; gy++)
+        for (int gx = -GridOffset; gx < GridSize - GridOffset; gx++)
+        {
+            AxisSpan spanX = axisSpan[gx + GridOffset];
+            AxisSpan spanY = axisSpan[gy + GridOffset];
+            AxisSpan spanZ = axisSpan[gz + GridOffset];
+
+            int taps = 0;
+            for (int pz = 0; pz < 2; pz++)
+            {
+                int countZ = pz == 0 ? spanZ.CountA : spanZ.CountB;
+                if (countZ == 0) continue;
+                int offsetZ = pz == 0 ? spanZ.OffsetA : spanZ.OffsetA + 1;
+
+                for (int py = 0; py < 2; py++)
+                {
+                    int countY = py == 0 ? spanY.CountA : spanY.CountB;
+                    if (countY == 0) continue;
+                    int offsetY = py == 0 ? spanY.OffsetA : spanY.OffsetA + 1;
+
+                    for (int px = 0; px < 2; px++)
+                    {
+                        int countX = px == 0 ? spanX.CountA : spanX.CountB;
+                        if (countX == 0) continue;
+                        int offsetX = px == 0 ? spanX.OffsetA : spanX.OffsetA + 1;
+
+                        int slot = (offsetX + 1) + 3 * ((offsetY + 1) + 3 * (offsetZ + 1));
+                        if (neighborSolid[slot]) taps += countX * countY * countZ;
+                    }
+                }
+            }
+
+            density[GridIndex(gx, gy, gz)] = taps * inverseTaps;
+        }
+    }
+
+    /// <summary>Wie sich die SubPerCell Abtastpunkte einer Achse auf zwei benachbarte Blöcke verteilen</summary>
+    private readonly record struct AxisSpan(int OffsetA, int CountA, int CountB);
+
+    private static AxisSpan SpanFor(int g)
+    {
+        int start = g * SubPerCell - SubPerCell / 2;
+        int offsetA = start >> SubVoxels.Shift; // arithmetischer Shift = Abrunden, auch negativ
+
+        int countA = 0;
+        for (int o = 0; o < SubPerCell; o++)
+            if (((start + o) >> SubVoxels.Shift) == offsetA) countA++;
+
+        return new AxisSpan(offsetA, countA, SubPerCell - countA);
+    }
+
+    /// <summary>Füllgrad 0..255; Koordinaten sind block-lokale Sub-Voxel (dürfen in die Nachbarblöcke reichen)</summary>
+    private static int Fill(bool[] neighborSolid, byte[]?[] neighborField, int sx, int sy, int sz)
     {
         int slot = ((sx >> SubVoxels.Shift) + 1)
                  + 3 * (((sy >> SubVoxels.Shift) + 1)
                  + 3 * ((sz >> SubVoxels.Shift) + 1));
 
-        ulong[]? mask = neighborMask[slot];
-        if (mask == null) return neighborSolid[slot] ? 1 : 0;
+        byte[]? field = neighborField[slot];
+        if (field == null) return neighborSolid[slot] ? 255 : 0;
 
-        return SubVoxels.HasBit(mask, sx & SubVoxels.LowMask, sy & SubVoxels.LowMask, sz & SubVoxels.LowMask) ? 1 : 0;
+        return SubVoxels.Get(field, sx & SubVoxels.LowMask, sy & SubVoxels.LowMask, sz & SubVoxels.LowMask);
     }
 
     /// <summary>Nach außen zeigende Normale = entgegen dem Dichtegradienten</summary>

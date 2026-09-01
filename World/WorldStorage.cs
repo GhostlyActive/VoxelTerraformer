@@ -10,7 +10,7 @@ namespace Terraformer.World;
 /// </summary>
 public sealed class WorldStorage
 {
-    private const byte FormatVersion = 3; // v3: Blöcke + 512-Bit-Sub-Voxel-Masken (Sculpt, 8x8x8)
+    private const byte FormatVersion = 4; // v4: Blöcke + Sub-Voxel-Dichtefeld (512 Byte je bearbeitetem Block)
 
     private sealed class WorldMeta
     {
@@ -98,7 +98,7 @@ public sealed class WorldStorage
         return true;
     }
 
-    public bool TryLoad(ChunkCoord coord, int expectedLength, out byte[]? blocks, out Dictionary<int, ulong[]>? refinements)
+    public bool TryLoad(ChunkCoord coord, int expectedLength, out byte[]? blocks, out Dictionary<int, byte[]>? refinements)
     {
         blocks = null;
         refinements = null;
@@ -120,16 +120,15 @@ public sealed class WorldStorage
             int count = reader.ReadInt32();
             if (count < 0 || count > expectedLength) return false; // offensichtlich kaputt
 
-            var loadedRefinements = new Dictionary<int, ulong[]>(count);
+            var loadedRefinements = new Dictionary<int, byte[]>(count);
             for (int i = 0; i < count; i++)
             {
                 int index = reader.ReadInt32();
                 if (index < 0 || index >= expectedLength) return false; // korrupte Daten
 
-                var mask = new ulong[SubVoxels.WordCount];
-                for (int word = 0; word < SubVoxels.WordCount; word++)
-                    mask[word] = reader.ReadUInt64();
-                loadedRefinements[index] = mask;
+                byte[] field = reader.ReadBytes(SubVoxels.CellCount);
+                if (field.Length != SubVoxels.CellCount) return false;
+                loadedRefinements[index] = field;
             }
 
             blocks = data;
@@ -146,7 +145,7 @@ public sealed class WorldStorage
         }
     }
 
-    public bool Save(ChunkCoord coord, byte[] blocks, IReadOnlyDictionary<int, ulong[]> refinements)
+    public bool Save(ChunkCoord coord, byte[] blocks, IReadOnlyDictionary<int, byte[]> refinements)
     {
         try
         {
@@ -160,11 +159,10 @@ public sealed class WorldStorage
 
             writer.Write(blocks);
             writer.Write(refinements.Count);
-            foreach ((int index, ulong[] mask) in refinements)
+            foreach ((int index, byte[] field) in refinements)
             {
                 writer.Write(index);
-                for (int word = 0; word < SubVoxels.WordCount; word++)
-                    writer.Write(mask[word]);
+                writer.Write(field);
             }
 
             return true;

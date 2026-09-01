@@ -13,7 +13,7 @@ public class DayNightCycle
     public float DayLengthSeconds = 240f; // 4 Minuten
 
     // Speed Control
-    public float TimeScale { get; private set; } = 1f;
+    public float TimeScale { get; set; } = 1f;
     public float MinTimeScale = 0.10f;
     public float MaxTimeScale = 20.0f;
     public float TimeScaleStep = 1.25f; // multiplikativ
@@ -48,6 +48,25 @@ public class DayNightCycle
 
     /// <summary>Tageszeit vorspulen (z. B. für Tests oder einen definierten Spielstart)</summary>
     public void AdvanceTime(float seconds) => _timeSeconds += seconds;
+
+    /// <summary>
+    /// Tageszeit in Stunden, 12 = Sonnenhöchststand. Die Bahn startet bei Phase 0 am
+    /// Osthorizont, deshalb der Versatz von 6 Stunden.
+    /// </summary>
+    public float TimeOfDayHours
+    {
+        get
+        {
+            float phase = (_timeSeconds / MathF.Max(1e-3f, DayLengthSeconds)) % 1f;
+            if (phase < 0f) phase += 1f;
+            return (phase * 24f + 6f) % 24f;
+        }
+        set
+        {
+            float phase = (((value - 6f) % 24f) + 24f) % 24f / 24f;
+            _timeSeconds = phase * DayLengthSeconds;
+        }
+    }
 
     /// <summary>Aktuelle Tageszeit — für Speichern/Laden</summary>
     public float TimeSeconds

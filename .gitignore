@@ -48,3 +48,9 @@ TestResults/
 # Coverage
 # ==============================
 coverage/
+
+# ==============================
+# records
+# ==============================
+demo-frames/
+smoke.png

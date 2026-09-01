@@ -20,6 +20,34 @@ public sealed class DebugSettings
     /// <summary>Kugelradius des Sculpt-Brushes (Taste V, Ctrl+Mausrad)</summary>
     public float SculptRadius { get; set; } = 0.7f;
 
+    /// <summary>Weiche Pinselflanke als Vielfaches des Radius (nur Smooth-Modus): 0 = harte Kante, größer = rundere Blobs</summary>
+    public float BrushSoftness { get; set; } = 0.6f;
+
+    /// <summary>Tempo der Baufront in Metern pro Sekunde (Rechtsklick). Klein = langsam wachsend und gut dosierbar.</summary>
+    public float BuildSpeed { get; set; } = 2.5f;
+
+    /// <summary>Wie lange Pinselkugel bzw. Blockrahmen nach einer Größenänderung sichtbar bleiben (Sekunden)</summary>
+    public float PreviewHold { get; set; } = 1.0f;
+
+    public float FieldOfView { get; set; } = 60f;
+
+    /// <summary>Länge eines vollen Tag-Nacht-Zyklus in Sekunden</summary>
+    public float DayLengthSeconds { get; set; } = 240f;
+
+    /// <summary>Startzeit und Sprungziel der Sonne in Stunden (12 = Mittag)</summary>
+    public float TimeOfDay { get; set; } = 12f;
+
+    /// <summary>Tempo des Tageslaufs; 0 hält die Sonne an (auch über Z/U im Spiel)</summary>
+    public float TimeFlow { get; set; } = 1f;
+
+    public float FogStart { get; set; } = 100f;
+    public float FogEnd { get; set; } = 230f;
+
+    /// <summary>Anteil der Himmelszellen, die eine Wolke tragen</summary>
+    public float CloudCoverage { get; set; } = 0.35f;
+    public float CloudHeight { get; set; } = 80f;
+    public float CloudDrift { get; set; } = 1.2f;
+
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Terraformer", "debug-settings.json");

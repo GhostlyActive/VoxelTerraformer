@@ -1,6 +1,7 @@
 using Raylib_cs;
 using System.Numerics;
 using Terraformer.Config;
+using Terraformer.Demo;
 using Terraformer.Effects;
 using Terraformer.Rendering;
 using Terraformer.UI;
@@ -17,6 +18,12 @@ public static class Program
 
         // Mini-Testmodus: rendert ein paar Sekunden, legt einen Screenshot ab und beendet sich
         bool smokeTest = Array.Exists(args, argument => argument == "--smoke");
+
+        // Aufnahmemodus: gescripteter Ablauf, jedes Bild wird als PNG abgelegt (siehe Demo/DemoSequence.cs).
+        // Fester Zeitschritt, damit die Aufnahme unabhängig von der Bildrate gleichmäßig läuft.
+        bool demoMode = Array.Exists(args, argument => argument == "--demo");
+        const int demoFps = 30;
+        const string demoFrameDirectory = "demo-frames";
 
         Raylib.InitWindow(screenWidth, screenHeight, "Terraformer");
         Raylib.SetTargetFPS(60);
@@ -46,8 +53,13 @@ public static class Program
             DrawSunAndMoon = true
         };
 
-        // Testlauf zur Mittagszeit, damit auf dem Screenshot etwas zu erkennen ist
-        if (smokeTest) dayNight.AdvanceTime(60f);
+        dayNight.TimeOfDayHours = settings.TimeOfDay;
+        dayNight.TimeScale = settings.TimeFlow;
+
+        // Menü und Tasten (Z/U) greifen beide auf den Tageslauf zu — der Abgleich pro Frame
+        // erkennt an diesen Spiegelwerten, welche Seite sich zuletzt geändert hat
+        float menuTimeOfDay = settings.TimeOfDay;
+        float menuTimeFlow = settings.TimeFlow;
 
         TerrainShader terrainShader = new TerrainShader();
         ChunkMeshManager meshManager = new ChunkMeshManager(world);
@@ -63,6 +75,24 @@ public static class Program
         StarField stars = new StarField();
         CloudLayer clouds = new CloudLayer();
 
+        DemoSequence? demo = null;
+        int demoFrames = 0;
+
+        if (demoMode)
+        {
+            world.EnsureAround(DemoSequence.Anchor, 6);
+            demo = new DemoSequence(world, particles, meshManager);
+
+            // Der Standpunkt steht erst nach dem Abtasten des Geländes fest
+            world.EnsureAround(demo.CameraPosition, 6);
+            meshManager.BuildAllNow();
+            dayNight.TimeOfDayHours = 12f;
+            dayNight.TimeScale = 0f; // Licht soll über die Aufnahme konstant bleiben
+
+            Directory.CreateDirectory(demoFrameDirectory);
+            foreach (string old in Directory.EnumerateFiles(demoFrameDirectory, "*.png")) File.Delete(old);
+        }
+
         int smokeFrames = 0;
         bool debugOverlay = smokeTest; // im Testlauf direkt an, damit die Stats auf dem Screenshot stehen
         float elapsedTime = 0f;
@@ -72,7 +102,7 @@ public static class Program
 
         while (!Raylib.WindowShouldClose() && !quitRequested)
         {
-            float dt = Raylib.GetFrameTime();
+            float dt = demoMode ? 1f / demoFps : Raylib.GetFrameTime();
 
             // War das Pause-Menü zu Framebeginn offen, bekommt das Gameplay diesen Frame
             // keine Inputs — sonst leakt z. B. das bestätigende Enter ins Debug-Menü
@@ -133,7 +163,23 @@ public static class Program
                 }
             }
 
-            if (!paused)
+            if (demoMode)
+            {
+                elapsedTime += dt;
+
+                demo!.Update(dt);
+                player.Teleport(demo.CameraPosition);
+                player.PointAt(demo.LookTarget);
+                camera = player.CameraOnly();
+
+                world.ShowPreviewAlways = false;
+                particles.LightScale = 1f;
+                particles.Update(world, dt);
+
+                dayNight.Center = player.Position;
+                dayNight.Update(0f);
+            }
+            else if (!paused)
             {
                 elapsedTime += dt;
 
@@ -151,7 +197,18 @@ public static class Program
                 dayNight.Center = player.Position;
 
                 // Day/Night Update (Speed: Z/U)
+                dayNight.DayLengthSeconds = settings.DayLengthSeconds;
+
+                if (settings.TimeOfDay != menuTimeOfDay) dayNight.TimeOfDayHours = settings.TimeOfDay;
+                if (settings.TimeFlow != menuTimeFlow) dayNight.TimeScale = settings.TimeFlow;
+
                 dayNight.Update(dt);
+
+                // Nur das Tempo zurückspiegeln — die Uhrzeit im Menü bleibt der gesetzte
+                // Sprungpunkt, sonst würde sie beim Beenden auf der Nachtzeit stehenbleiben
+                settings.TimeFlow = dayNight.TimeScale;
+                menuTimeOfDay = settings.TimeOfDay;
+                menuTimeFlow = settings.TimeFlow;
 
                 // V zykliert durch die drei Voxel-Stufen
                 if (Raylib.IsKeyPressed(KeyboardKey.V))
@@ -168,10 +225,13 @@ public static class Program
                         settings.SculptRadius = Math.Clamp(settings.SculptRadius + wheel * 0.1f, 0.25f, 2.5f);
                     else
                         settings.BuildReach = Math.Clamp(settings.BuildReach + wheel, 2f, 60f);
+
+                    world.PulsePreview(); // Vorschau kurz zeigen, damit die neue Größe sichtbar wird
                 }
 
                 // Welt-Interaktion
-                world.Update(camera, player.Bounds, settings.BuildReach, settings.SculptRadius);
+                world.ShowPreviewAlways = debugOverlay;
+                world.Update(camera, player.Bounds, settings);
 
                 // Partikel laufen über den unbeleuchteten Default-Shader → Weltlicht beim Spawn einbacken
                 Vector3 light = dayNight.AmbientColor + dayNight.SunlightColor * 0.8f;
@@ -192,6 +252,8 @@ public static class Program
 
             Raylib.BeginMode3D(camera);
 
+            terrainShader.FogStart = settings.FogStart;
+            terrainShader.FogEnd = MathF.Max(settings.FogEnd, settings.FogStart + 10f);
             terrainShader.SetFrame(dayNight, camera.Position);
 
             Frustum frustum = Frustum.FromCamera(
@@ -199,10 +261,14 @@ public static class Program
             meshManager.Draw(terrainShader.Material, frustum);
 
             world.DrawHover();
+            demo?.Draw3D();
             particles.Draw();
             dayNight.Draw3D(camera);
             stars.Draw(camera, 1f - dayNight.Daylight01, elapsedTime);
-            clouds.Draw(elapsedTime, dayNight.Daylight01, player.Position);
+            clouds.Coverage = settings.CloudCoverage;
+            clouds.Height = settings.CloudHeight;
+            clouds.DriftSpeed = settings.CloudDrift;
+            clouds.Draw(camera, elapsedTime, dayNight.Daylight01, player.Position);
 
             if (debugOverlay)
             {
@@ -213,6 +279,16 @@ public static class Program
             Raylib.EndMode3D();
 
             // UI
+            if (demoMode)
+            {
+                Raylib.EndDrawing();
+
+                CaptureFrame(demoFrameDirectory, demoFrames++);
+
+                if (demo!.Finished || demoFrames >= 15 * demoFps) break;
+                continue;
+            }
+
             Raylib.DrawFPS(10, 10);
             Raylib.DrawText("WASD move | Shift sprint | Space jump | LMB remove | RMB place | V mode", 10, 40, 20, Color.Black);
             Raylib.DrawText("Wheel: reach | Ctrl+Wheel: brush | Z/U day | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
@@ -239,14 +315,14 @@ public static class Program
             {
                 TerrainMode.Blocks => $"Blocks | Reach {settings.BuildReach:0}",
                 TerrainMode.Sculpt => $"Sculpt r={settings.SculptRadius:0.0} | Reach {settings.BuildReach:0}",
-                _ => $"Smooth r={settings.SculptRadius:0.0} | Reach {settings.BuildReach:0}",
+                _ => $"Smooth r={settings.SculptRadius:0.0} soft={settings.BrushSoftness:0.0} | Reach {settings.BuildReach:0}",
             };
             int reachWidth = Raylib.MeasureText(reachLabel, 16);
             int reachY = Raylib.GetScreenHeight() - 40;
             Raylib.DrawText(reachLabel, cx - reachWidth / 2 + 1, reachY + 1, 16, new Color(10, 15, 25, 200));
             Raylib.DrawText(reachLabel, cx - reachWidth / 2, reachY, 16, new Color(220, 245, 250, 240));
 
-            debugMenu.Draw(Raylib.GetScreenWidth());
+            debugMenu.Draw(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
             pauseMenu.Draw(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
 
             Raylib.EndDrawing();
@@ -258,9 +334,19 @@ public static class Program
             }
         }
 
-        settings.Save();
+        // Test- und Aufnahmelauf dürfen die Tuning-Werte nicht anfassen: das Fenster reißt beim
+        // Start den Fokus an sich, versehentliche Tasten/Scrolls landen sonst dauerhaft in der Config
+        if (!smokeTest && !demoMode) settings.Save();
+
         meshManager.Dispose();
         terrainShader.Unload();
         Raylib.CloseWindow();
+    }
+
+    private static void CaptureFrame(string directory, int index)
+    {
+        Image frame = Raylib.LoadImageFromScreen();
+        Raylib.ExportImage(frame, Path.Combine(directory, $"frame_{index:0000}.png"));
+        Raylib.UnloadImage(frame);
     }
 }
