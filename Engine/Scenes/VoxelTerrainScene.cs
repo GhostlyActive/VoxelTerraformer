@@ -148,7 +148,7 @@ public sealed class VoxelTerrainScene : IDisposable
     {
         ElapsedTime += dt;
 
-        if (AllowPlayerControl) Camera = Player.Update(World, dt);
+        if (AllowPlayerControl) Camera = Player.Update(World, dt); else Camera = Player.CameraOnly();
 
         // Stream the world around the player (budget: at most 2 new chunks per frame)
         World.UpdateStreaming(Player.Position, 2);

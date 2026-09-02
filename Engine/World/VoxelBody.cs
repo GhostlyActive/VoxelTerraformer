@@ -8,40 +8,78 @@ namespace VoxelEngine.World;
 /// <see cref="VoxelWorld"/> it has a fixed side length, no neighbours and a place of its own in
 /// space: position, the size of a single voxel, and a spin around the Y axis.
 ///
-/// The side length is deliberately <see cref="Chunk.Size"/>, which makes it possible to reuse the
-/// same <c>ChunkMesher</c> the terrain runs through, ambient occlusion included. Bigger bodies come
-/// from <see cref="VoxelScale"/> rather than from more voxels.
+/// The grid is split into cubes of <see cref="ChunkSize"/> so a hit only forces the few sub-chunks
+/// it touched to be remeshed. Without that, a planet of a hundred voxels across would rebuild a
+/// million voxels for every shot.
 /// </summary>
 public sealed class VoxelBody
 {
-    public const int Size = Chunk.Size;
+    /// <summary>Side length of one meshing sub-chunk; <see cref="Size"/> has to be a multiple of it</summary>
+    public const int ChunkSize = 32;
 
-    private static readonly Vector3 GridCenter = new(Size * 0.5f);
+    private readonly byte[] _blocks;
+    private readonly bool[] _chunkDirty;
+    private readonly int _chunksPerAxis;
 
-    private readonly byte[] _blocks = new byte[Size * Size * Size];
+    private readonly Vector3 _gridCenter;
 
-    public required string Name { get; init; }
+    public string Name { get; }
+
+    /// <summary>Grid resolution: the body is Size³ voxels</summary>
+    public int Size { get; }
+
+    /// <summary>Side length of one voxel in metres</summary>
+    public float VoxelScale { get; }
 
     /// <summary>Centre of the body in world coordinates</summary>
     public Vector3 Position { get; set; }
-
-    /// <summary>Side length of one voxel in metres</summary>
-    public float VoxelScale { get; init; } = 1f;
 
     /// <summary>Own rotation around the Y axis, in radians</summary>
     public float Spin { get; set; }
 
     public float SpinSpeed { get; init; }
 
+    /// <summary>Radius of the filled sphere in metres, set by <see cref="FillSphere"/></summary>
+    public float SurfaceRadius { get; private set; }
+
     /// <summary>Radius of the bounding sphere, for coarse hit tests and collision</summary>
     public float BoundingRadius => Size * 0.5f * MathF.Sqrt(3f) * VoxelScale;
 
-    /// <summary>The mesh needs rebuilding</summary>
-    public bool Dirty { get; private set; } = true;
+    public int ChunkCount => _chunkDirty.Length;
 
-    public void MarkClean() => Dirty = false;
+    public VoxelBody(string name, int size, float voxelScale, float spinSpeed = 0f)
+    {
+        if (size <= 0 || size % ChunkSize != 0)
+            throw new ArgumentException($"Size has to be a positive multiple of {ChunkSize}", nameof(size));
+
+        Name = name;
+        Size = size;
+        VoxelScale = voxelScale;
+        SpinSpeed = spinSpeed;
+
+        _blocks = new byte[size * size * size];
+        _chunksPerAxis = size / ChunkSize;
+        _chunkDirty = new bool[_chunksPerAxis * _chunksPerAxis * _chunksPerAxis];
+        _gridCenter = new Vector3(size * 0.5f);
+
+        Array.Fill(_chunkDirty, true);
+    }
 
     public void Advance(float dt) => Spin = (Spin + SpinSpeed * dt) % MathF.Tau;
+
+    public bool IsChunkDirty(int chunkIndex) => _chunkDirty[chunkIndex];
+
+    public void MarkChunkClean(int chunkIndex) => _chunkDirty[chunkIndex] = false;
+
+    /// <summary>Voxel coordinate of a sub-chunk's lower corner</summary>
+    public (int X, int Y, int Z) ChunkOrigin(int chunkIndex)
+    {
+        int x = chunkIndex % _chunksPerAxis;
+        int z = chunkIndex / _chunksPerAxis % _chunksPerAxis;
+        int y = chunkIndex / (_chunksPerAxis * _chunksPerAxis);
+
+        return (x * ChunkSize, y * ChunkSize, z * ChunkSize);
+    }
 
     public int Get(int x, int y, int z)
     {
@@ -57,15 +95,12 @@ public sealed class VoxelBody
         if (_blocks[index] == id) return;
 
         _blocks[index] = id;
-        Dirty = true;
+        MarkDirtyAround(x, y, z, x, y, z);
     }
 
     /// <summary>A world point in the body's voxel coordinates (0..Size)</summary>
     public Vector3 ToLocal(Vector3 worldPoint)
-        => RotateY(worldPoint - Position, -Spin) / VoxelScale + GridCenter;
-
-    /// <summary>Translate a world direction into the body's rotation, sunlight for instance</summary>
-    public Vector3 DirectionToLocal(Vector3 worldDirection) => RotateY(worldDirection, -Spin);
+        => RotateY(worldPoint - Position, -Spin) / VoxelScale + _gridCenter;
 
     public bool IsSolidAt(Vector3 worldPoint)
     {
@@ -82,6 +117,13 @@ public sealed class VoxelBody
     /// landed beside it and the caller can discard it.
     /// </summary>
     public int Carve(Vector3 worldCenter, float worldRadius)
+        => Carve(worldCenter, worldRadius, BlockRegistry.Air, out _);
+
+    /// <summary>
+    /// Same, but also counts how many voxels of <paramref name="watchMaterial"/> went with it —
+    /// which is how a game notices that a shot has reached something that should not be touched.
+    /// </summary>
+    public int Carve(Vector3 worldCenter, float worldRadius, byte watchMaterial, out int watchedRemoved)
     {
         Vector3 center = ToLocal(worldCenter);
         float radius = worldRadius / VoxelScale;
@@ -94,22 +136,25 @@ public sealed class VoxelBody
         int maxZ = Math.Min(Size - 1, (int)MathF.Ceiling(center.Z + radius));
 
         int removed = 0;
+        watchedRemoved = 0;
 
         for (int y = minY; y <= maxY; y++)
         for (int z = minZ; z <= maxZ; z++)
         for (int x = minX; x <= maxX; x++)
         {
             int index = Index(x, y, z);
-            if (!BlockRegistry.IsSolid(_blocks[index])) continue;
+            byte block = _blocks[index];
+            if (!BlockRegistry.IsSolid(block)) continue;
 
             var voxelCenter = new Vector3(x + 0.5f, y + 0.5f, z + 0.5f);
             if (Vector3.DistanceSquared(voxelCenter, center) > radius * radius) continue;
 
             _blocks[index] = BlockRegistry.Air;
             removed++;
+            if (block == watchMaterial) watchedRemoved++;
         }
 
-        if (removed > 0) Dirty = true;
+        if (removed > 0) MarkDirtyAround(minX, minY, minZ, maxX, maxY, maxZ);
         return removed;
     }
 
@@ -124,27 +169,60 @@ public sealed class VoxelBody
 
     /// <summary>
     /// Fill the body as a sphere. <paramref name="roughness"/> ruffles the surface with 3D noise,
-    /// <paramref name="coreDepth"/> is the thickness of the crust in voxels; below it the core
+    /// <paramref name="crustDepth"/> is the thickness of the crust in voxels; below it the core
     /// material shows through as soon as something is taken off.
     /// </summary>
-    public void FillSphere(float radius, byte crust, byte core, int seed, float roughness = 0.12f, int coreDepth = 4)
+    public void FillSphere(float radiusVoxels, byte crust, byte core, int seed, float roughness = 0.12f, int crustDepth = 4)
     {
+        SurfaceRadius = radiusVoxels * VoxelScale;
+
+        // The noise frequency is tied to the grid, so a large body gets more surface detail rather
+        // than the same handful of bumps stretched over it. Kept low enough that the result reads
+        // as continents and basins instead of fine corrugation.
+        float frequency = 3.2f / Size;
+        float fineFrequency = frequency * 4.5f;
+
         for (int y = 0; y < Size; y++)
         for (int z = 0; z < Size; z++)
         for (int x = 0; x < Size; x++)
         {
             var voxel = new Vector3(x + 0.5f, y + 0.5f, z + 0.5f);
-            float distance = Vector3.Distance(voxel, GridCenter);
+            float distance = Vector3.Distance(voxel, _gridCenter);
 
-            float bumps = Noise.Fbm3D(x * 0.16f, y * 0.16f, z * 0.16f, seed, 3, 0.5f, 2f) - 0.5f;
-            float surface = radius * (1f + bumps * roughness * 2f);
+            // Two scales of noise: the coarse one shapes basins and ridges, the fine one breaks up
+            // the concentric terraces a voxelised sphere would otherwise show as tree rings
+            float coarse = Noise.Fbm3D(x * frequency, y * frequency, z * frequency, seed, 4, 0.5f, 2f) - 0.5f;
+            float fine = Noise.Fbm3D(x * fineFrequency, y * fineFrequency, z * fineFrequency, seed + 777, 2, 0.5f, 2f) - 0.5f;
+
+            float bumps = coarse * 0.78f + fine * 0.36f;
+            float surface = radiusVoxels * (1f + bumps * roughness * 2f);
 
             if (distance > surface) continue;
 
-            _blocks[Index(x, y, z)] = distance > surface - coreDepth ? crust : core;
+            _blocks[Index(x, y, z)] = distance > surface - crustDepth ? crust : core;
         }
 
-        Dirty = true;
+        Array.Fill(_chunkDirty, true);
+    }
+
+    /// <summary>Radius in metres below which only core material is left, for chain reactions</summary>
+    public float CoreRadius(int crustDepth) => MathF.Max(0f, SurfaceRadius - crustDepth * VoxelScale);
+
+    // A voxel on a chunk border also changes the faces of the neighbouring chunk, so the range is
+    // widened by one before it is converted to chunk indices
+    private void MarkDirtyAround(int minX, int minY, int minZ, int maxX, int maxY, int maxZ)
+    {
+        int cx0 = Math.Max(0, (minX - 1) / ChunkSize);
+        int cy0 = Math.Max(0, (minY - 1) / ChunkSize);
+        int cz0 = Math.Max(0, (minZ - 1) / ChunkSize);
+        int cx1 = Math.Min(_chunksPerAxis - 1, (maxX + 1) / ChunkSize);
+        int cy1 = Math.Min(_chunksPerAxis - 1, (maxY + 1) / ChunkSize);
+        int cz1 = Math.Min(_chunksPerAxis - 1, (maxZ + 1) / ChunkSize);
+
+        for (int cy = cy0; cy <= cy1; cy++)
+        for (int cz = cz0; cz <= cz1; cz++)
+        for (int cx = cx0; cx <= cx1; cx++)
+            _chunkDirty[cx + _chunksPerAxis * (cz + _chunksPerAxis * cy)] = true;
     }
 
     private static Vector3 RotateY(Vector3 v, float angle)
@@ -155,8 +233,8 @@ public sealed class VoxelBody
         return new Vector3(v.X * cos + v.Z * sin, v.Y, -v.X * sin + v.Z * cos);
     }
 
-    private static bool InBounds(int x, int y, int z)
+    private bool InBounds(int x, int y, int z)
         => x >= 0 && x < Size && y >= 0 && y < Size && z >= 0 && z < Size;
 
-    private static int Index(int x, int y, int z) => x + Size * (z + Size * y);
+    private int Index(int x, int y, int z) => x + Size * (z + Size * y);
 }

@@ -40,5 +40,5 @@ dropping a file in later replaces the stand-in without a code change.
 | Game | expected files |
 | --- | --- |
 | `RocketStorm` | `launch`, `explosion`, `hit` |
-| `SolarSystem` | `shot`, `impact`, `bump` |
+| `SolarSystem` | `shot`, `impact`, `bump`, `detonate` |
 | `FreeWalk` | — |

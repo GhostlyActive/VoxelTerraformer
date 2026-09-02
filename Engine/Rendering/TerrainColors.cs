@@ -1,4 +1,5 @@
 using Raylib_cs;
+using System.Numerics;
 using VoxelEngine.World;
 
 namespace VoxelEngine.Rendering;
@@ -16,56 +17,37 @@ public static class TerrainColors
         return Scale(baseColor, variation);
     }
 
+    // Height anchors for the terrain gradient, from the bottom of a basin to a snow cap. Colours
+    // in between are interpolated, so retuning the landscape is a matter of moving these numbers.
+    private static readonly (int Y, Vector3 Color)[] _bands =
+    {
+        (0,  new Vector3(10, 26, 78)),    // deep basin
+        (4,  new Vector3(28, 66, 124)),   // shallow water
+        (7,  new Vector3(198, 184, 132)), // shore
+        (11, new Vector3(74, 152, 78)),   // grassland
+        (23, new Vector3(52, 120, 58)),   // uplands
+        (32, new Vector3(128, 104, 78)),  // bare rock
+        (42, new Vector3(150, 146, 150)), // scree
+        (52, new Vector3(240, 242, 248)), // snow
+    };
+
     private static Color HeightColor(int y)
     {
-        // Height bands (in block Y)
-        const int deepBlueEndY = 8;      // 0..8 deep blue
-        const int greenEndY = 15;        // ..15 green
-        const int brownEndY = 24;        // ..24 brown, then the transition to snow
+        if (y <= _bands[0].Y) return ToColor(_bands[0].Color);
 
-        // bottom: deep blue
-        float dr = 10, dg = 25, db = 80;
-        // green
-        float gr = 60, gg = 190, gb = 70;
-        // brown
-        float br = 140, bg = 95, bb = 50;
-        // white (snow)
-        float wr = 235, wg = 235, wb = 235;
+        for (int i = 1; i < _bands.Length; i++)
+        {
+            if (y > _bands[i].Y) continue;
 
-        float r, g, b;
-
-        if (y <= deepBlueEndY)
-        {
-            float t = InverseLerp(0, deepBlueEndY, y);
-            r = Lerp(dr, dr + 15, t);
-            g = Lerp(dg, dg + 20, t);
-            b = Lerp(db, db + 40, t);
-        }
-        else if (y <= greenEndY)
-        {
-            float t = InverseLerp(deepBlueEndY, greenEndY, y);
-            r = Lerp(dr, gr, t);
-            g = Lerp(dg, gg, t);
-            b = Lerp(db, gb, t);
-        }
-        else if (y <= brownEndY)
-        {
-            float t = InverseLerp(greenEndY, brownEndY, y);
-            r = Lerp(gr, br, t);
-            g = Lerp(gg, bg, t);
-            b = Lerp(gb, bb, t);
-        }
-        else
-        {
-            // soft transition brown -> white (+10 = width of the snow band)
-            float t = InverseLerp(brownEndY, brownEndY + 10, y);
-            r = Lerp(br, wr, t);
-            g = Lerp(bg, wg, t);
-            b = Lerp(bb, wb, t);
+            float t = InverseLerp(_bands[i - 1].Y, _bands[i].Y, y);
+            return ToColor(Vector3.Lerp(_bands[i - 1].Color, _bands[i].Color, t));
         }
 
-        return new Color((byte)r, (byte)g, (byte)b, (byte)255);
+        return ToColor(_bands[^1].Color);
     }
+
+    private static Color ToColor(Vector3 rgb)
+        => new((byte)Math.Clamp(rgb.X, 0f, 255f), (byte)Math.Clamp(rgb.Y, 0f, 255f), (byte)Math.Clamp(rgb.Z, 0f, 255f), (byte)255);
 
     private static float Hash(int x, int y, int z)
     {
@@ -85,8 +67,6 @@ public static class TerrainColors
         (byte)Math.Clamp(color.G * factor, 0f, 255f),
         (byte)Math.Clamp(color.B * factor, 0f, 255f),
         color.A);
-
-    private static float Lerp(float a, float b, float t) => a + (b - a) * t;
 
     private static float InverseLerp(float a, float b, float v)
     {

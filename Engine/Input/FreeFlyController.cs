@@ -25,10 +25,17 @@ public sealed class FreeFlyController
 
     public float BoostMultiplier { get; set; } = 3.5f;
 
-    /// <summary>Share of the velocity shed per second (0 = frictionless)</summary>
+    /// <summary>Share of the velocity shed per second (0 = frictionless, which is what an orbit needs)</summary>
     public float Damping { get; set; } = 2.2f;
 
+    /// <summary>Runaway guard rather than a speed limit: gravity may push right up against it</summary>
     public float MaxSpeed { get; set; } = 260f;
+
+    /// <summary>
+    /// Acceleration from outside the ship, gravity above all. Set it once per frame before
+    /// <see cref="Update"/>; it is applied like thrust and is what makes an orbit possible.
+    /// </summary>
+    public Vector3 ExternalAcceleration { get; set; }
 
     public Vector3 Velocity => _velocity;
     public float Speed => _velocity.Length();
@@ -63,6 +70,17 @@ public sealed class FreeFlyController
     /// <summary>Kills the motion without changing where you are looking</summary>
     public void Halt() => _velocity = Vector3.Zero;
 
+    /// <summary>Aim the view at a point in the world, for a scripted start or a jump cut</summary>
+    public void PointAt(Vector3 target)
+    {
+        Vector3 direction = target - Position;
+        float horizontal = MathF.Sqrt(direction.X * direction.X + direction.Z * direction.Z);
+        if (horizontal < 1e-4f && MathF.Abs(direction.Y) < 1e-4f) return;
+
+        _yaw = MathF.Atan2(direction.X, direction.Z) * (180f / MathF.PI);
+        _pitch = Math.Clamp(MathF.Atan2(direction.Y, horizontal) * (180f / MathF.PI), -89f, 89f);
+    }
+
     public void Teleport(Vector3 position)
     {
         Position = position;
@@ -91,6 +109,7 @@ public sealed class FreeFlyController
             _velocity += Vector3.Normalize(wish) * thrust * dt;
         }
 
+        _velocity += ExternalAcceleration * dt;
         _velocity *= MathF.Max(0f, 1f - Damping * dt);
 
         float speed = _velocity.Length();

@@ -6,30 +6,37 @@ using VoxelEngine.Effects;
 namespace Terraformer.Games.SolarSystem;
 
 /// <summary>
-/// The ship's cannon. Holding the trigger packs more material into the round: a tap sends a
-/// small fast pellet, a full charge lobs a slow boulder that takes a bite out of a moon.
+/// The ship's cannon. Holding the trigger packs more material into the round: a tap sends a small
+/// fast pellet, a full charge lobs a slow boulder that takes a real bite out of a planet.
 ///
-/// Rounds fly straight until they hit a body or run out of time. Hits are checked in substeps
-/// along the flight path — at 300 m/s a whole planet fits between two frames, and the round
-/// would sail straight through it.
+/// Rounds fly straight until they hit something or run out of time. Hits are checked in substeps
+/// along the flight path — at over a kilometre per second a whole moon fits between two frames,
+/// and the round would sail straight through it.
 /// </summary>
 public sealed class VoxelCannon
 {
-    /// <summary>Hold time for a full charge, in seconds</summary>
-    public const float FullChargeSeconds = 1.5f;
+    /// <summary>Reports a hit at a point; returns true when the round should stop there</summary>
+    public delegate bool ShotHitTest(Vector3 point, float blastRadius, float shotSize);
 
-    private const float MinShotSize = 1.3f;
-    private const float MaxShotSize = 4.6f;
-    private const float MinBlastRadius = 3.5f;
-    private const float MaxBlastRadius = 13f;
+    /// <summary>Hold time for a full charge, in seconds</summary>
+    public const float FullChargeSeconds = 1.6f;
+
+    private const float MinShotSize = 10f;
+    private const float MaxShotSize = 46f;
+    private const float MinBlastRadius = 70f;
+    private const float MaxBlastRadius = 360f;
 
     // Heavy rounds fly slower: the arc gives the size some weight
-    private const float LightShotSpeed = 320f;
-    private const float HeavyShotSpeed = 190f;
+    private const float LightShotSpeed = 1500f;
+    private const float HeavyShotSpeed = 850f;
 
-    private const float ShotLifetime = 14f;
+    private const float ShotLifetime = 22f;
     private const float ReloadSeconds = 0.18f;
-    private const float MaxStepPerSubstep = 1.5f;
+
+    // Has to stay below the voxel size of the smallest body, or a round can tunnel through a
+    // single layer of voxels without ever testing it
+    private const float MaxStepPerSubstep = 6f;
+
     private const float TrailInterval = 0.02f;
 
     private static readonly Vector3[] _faceOffsets =
@@ -87,13 +94,13 @@ public sealed class VoxelCannon
         if (!Charging) return;
 
         float charge = Charge01;
-        float size = SizeFor(charge);
+        float size = Lerp(MinShotSize, MaxShotSize, charge);
         float speed = Lerp(LightShotSpeed, HeavyShotSpeed, charge);
 
         _shots.Add(new Shot
         {
             // Start ahead of the cockpit, otherwise the round sits in your own view
-            Position = origin + direction * (2f + size),
+            Position = origin + direction * (size * 2f),
             Velocity = direction * speed + shipVelocity,
             Life = ShotLifetime,
             Size = size,
@@ -109,9 +116,6 @@ public sealed class VoxelCannon
         _reload = ReloadSeconds;
     }
 
-    /// <summary>Diameter a round would have at this charge level</summary>
-    public static float SizeFor(float charge01) => Lerp(MinShotSize, MaxShotSize, Math.Clamp(charge01, 0f, 1f));
-
     public void Clear()
     {
         _shots.Clear();
@@ -119,7 +123,7 @@ public sealed class VoxelCannon
         _charge = 0f;
     }
 
-    public void Update(float dt, IReadOnlyList<CelestialBody> bodies, Action<CelestialBody, Vector3, float> onHit)
+    public void Update(float dt, ShotHitTest hitTest)
     {
         _reload = MathF.Max(0f, _reload - dt);
 
@@ -137,7 +141,7 @@ public sealed class VoxelCannon
 
             LeaveTrail(shot, dt);
 
-            if (Advance(shot, dt, bodies, onHit)) _shots.RemoveAt(i);
+            if (Advance(shot, dt, hitTest)) _shots.RemoveAt(i);
         }
     }
 
@@ -151,84 +155,48 @@ public sealed class VoxelCannon
         Vector3 backwards = -Vector3.Normalize(shot.Velocity);
         _particles.SpawnTrail(
             shot.Position + backwards * shot.Size,
-            backwards * 6f,
+            backwards * shot.Size * 0.8f,
             new Color(255, 170, 70, 255),
-            shot.Size * 0.45f);
+            shot.Size * 0.5f);
     }
 
     /// <summary>Moves a round one frame along its path; true if it hit something on the way</summary>
-    private static bool Advance(Shot shot, float dt, IReadOnlyList<CelestialBody> bodies,
-        Action<CelestialBody, Vector3, float> onHit)
+    private static bool Advance(Shot shot, float dt, ShotHitTest hitTest)
     {
         float distance = shot.Velocity.Length() * dt;
-        int substeps = Math.Clamp((int)MathF.Ceiling(distance / MaxStepPerSubstep), 1, 32);
+        int substeps = Math.Clamp((int)MathF.Ceiling(distance / MaxStepPerSubstep), 1, 48);
         float step = dt / substeps;
 
         for (int i = 0; i < substeps; i++)
         {
             shot.Position += shot.Velocity * step;
-
-            CelestialBody? hit = FindHit(shot.Position, bodies);
-            if (hit == null) continue;
-
-            onHit(hit, shot.Position, shot.BlastRadius);
-            return true;
+            if (hitTest(shot.Position, shot.BlastRadius, shot.Size)) return true;
         }
 
         return false;
     }
 
-    private static CelestialBody? FindHit(Vector3 point, IReadOnlyList<CelestialBody> bodies)
-    {
-        foreach (CelestialBody body in bodies)
-        {
-            // Cheap bounding-sphere test before converting the point into the voxel grid
-            float reach = body.Body.BoundingRadius;
-            if (Vector3.DistanceSquared(point, body.Body.Position) > reach * reach) continue;
-
-            if (body.Body.IsSolidAt(point)) return body;
-        }
-
-        return null;
-    }
-
     /// <summary>Debris and fire at the point of impact; the colour comes from the material that was hit</summary>
     public void SpawnImpact(Vector3 point, Color debris, float blastRadius)
     {
-        float power = 0.7f + blastRadius / MaxBlastRadius;
+        float power = blastRadius / 26f;
 
         _particles.SpawnExplosion(point, debris, power);
-        _audio.Play("impact", 0.6f + power * 0.25f, 1.2f - power * 0.35f);
-    }
-
-    /// <summary>
-    /// The round growing at the muzzle while the trigger is held. Drawn far smaller than what
-    /// actually leaves the barrel: at arm's length a full-size boulder blacks out the screen.
-    /// </summary>
-    public void DrawCharge(Vector3 position)
-    {
-        if (!Charging) return;
-
-        const float previewScale = 0.2f;
-
-        float charge = Charge01;
-        float pulse = 1f + 0.08f * MathF.Sin((float)Raylib.GetTime() * 20f);
-
-        DrawBall(position, SizeFor(charge) * previewScale * pulse, (float)Raylib.GetTime() * 140f, 0.5f + charge * 0.5f);
+        _audio.Play("impact", 0.6f + Math.Clamp(blastRadius / MaxBlastRadius, 0f, 1f) * 0.3f,
+            1.2f - Math.Clamp(blastRadius / MaxBlastRadius, 0f, 1f) * 0.4f);
     }
 
     public void Draw()
     {
         foreach (Shot shot in _shots)
-            DrawBall(shot.Position, shot.Size, shot.Spin, 1f);
+            DrawBall(shot.Position, shot.Size, shot.Spin);
     }
 
     /// <summary>
     /// A round as a small cluster of cubes: a bright core with six smaller blocks stuck to its
-    /// faces, tumbling as it flies, wrapped in an additive glow. Reads as a lump of glowing
-    /// voxels rather than the single cube it used to be.
+    /// faces, tumbling as it flies, wrapped in an additive glow.
     /// </summary>
-    private static void DrawBall(Vector3 position, float size, float spin, float glow)
+    private static void DrawBall(Vector3 position, float size, float spin)
     {
         Rlgl.PushMatrix();
         Rlgl.Translatef(position.X, position.Y, position.Z);
@@ -243,7 +211,7 @@ public sealed class VoxelCannon
             Raylib.DrawCubeV(offset * (size * 0.52f), new Vector3(size * 0.6f), shell);
 
         Raylib.BeginBlendMode(BlendMode.Additive);
-        Raylib.DrawCubeV(Vector3.Zero, new Vector3(size * 1.9f), new Color((byte)255, (byte)110, (byte)40, (byte)(46 * glow)));
+        Raylib.DrawCubeV(Vector3.Zero, new Vector3(size * 1.9f), new Color((byte)255, (byte)110, (byte)40, (byte)46));
         Raylib.EndBlendMode();
 
         Rlgl.PopMatrix();

@@ -11,16 +11,34 @@ using VoxelEngine.World;
 namespace Terraformer.Games.SolarSystem;
 
 /// <summary>
-/// A small solar system built from voxel spheres. You fly freely between planets and moons and
-/// shoot them apart: every hit takes real voxels out of a body, until what is left of it carries
-/// on around its orbit as a hollowed-out lump.
+/// A solar system built from voxel spheres, at a scale where a planet fills the view when you get
+/// close. You fly freely between the bodies under their gravity and shoot them apart: every hit
+/// takes real voxels out, throws lasting rubble into orbit, and eventually opens the crust down to
+/// the core. Two of the planets have a molten core that does not appreciate being shot at.
 /// </summary>
 public sealed class SolarSystemGame : Game
 {
-    private const float SunRadius = 90f;
+    private const float SunRadius = 1500f;
+    private const float SunSurfaceGravity = 130f;
 
-    /// <summary>The default far plane of 1000 would cut away half the system</summary>
-    private const double FarClipPlane = 20000.0;
+    // The system is tens of kilometres across, so the raylib defaults (0.01 / 1000) would clip
+    // away everything but the body directly in front of the ship
+    private const double NearClipPlane = 2.0;
+    private const double FarClipPlane = 260000.0;
+
+    /// <summary>Thickness of the crust in voxels; below it sits the core material</summary>
+    private const int CrustDepth = 6;
+
+    /// <summary>
+    /// Planets with a molten core get a thicker shell than a single full charge can punch through,
+    /// so reaching the core takes a second shot into the same crater rather than one lucky hit.
+    /// </summary>
+    private const int VolatileCrustDepth = 22;
+
+    private const float DetonationSeconds = 2.8f;
+
+    /// <summary>The detonation eats outwards in steps, because carving is a whole-volume sweep</summary>
+    private const int DetonationSteps = 9;
 
     /// <summary>
     /// Materials are registered once per process: <see cref="Game.Load"/> runs again on every
@@ -35,14 +53,20 @@ public sealed class SolarSystemGame : Game
         public static readonly byte Ice = BlockRegistry.Register("Ice", new Color(196, 224, 240, 255));
         public static readonly byte IceCore = BlockRegistry.Register("Deep ice", new Color(120, 168, 204, 255));
         public static readonly byte Basalt = BlockRegistry.Register("Basalt", new Color(84, 82, 96, 255));
-        public static readonly byte Magma = BlockRegistry.Register("Magma", new Color(226, 110, 54, 255), emissive: 0.55f);
+        public static readonly byte Ash = BlockRegistry.Register("Ash", new Color(112, 100, 96, 255));
+        public static readonly byte Sand = BlockRegistry.Register("Sand", new Color(206, 178, 118, 255));
+        public static readonly byte Sandstone = BlockRegistry.Register("Sandstone", new Color(158, 126, 86, 255));
+        public static readonly byte Magma = BlockRegistry.Register("Magma", new Color(232, 112, 48, 255), emissive: 0.7f);
         public static readonly byte MoonRock = BlockRegistry.Register("Moon rock", new Color(168, 166, 172, 255));
+        public static readonly byte IceMoon = BlockRegistry.Register("Frozen moon", new Color(182, 206, 222, 255));
+        public static readonly byte RustMoon = BlockRegistry.Register("Rust moon", new Color(160, 106, 78, 255));
     }
 
     private readonly List<CelestialBody> _bodies = new();
 
     private FreeFlyController _ship = null!;
     private VoxelCannon _cannon = null!;
+    private DebrisField _debris = null!;
     private VoxelBodyRenderer _renderer = null!;
     private TerrainShader _shader = null!;
     private ParticleSystem _particles = null!;
@@ -52,67 +76,108 @@ public sealed class SolarSystemGame : Game
     private float _time;
     private int _hits;
     private int _voxelsDestroyed;
+    private float _flash;
 
     public override Camera3D Camera => _camera;
 
     public override IReadOnlyList<string> ControlHints => new[]
     {
         "WASD + mouse: fly, Space/Ctrl: climb and descend",
-        "Shift: afterburner, nothing slows you down out here",
-        "LMB: hold to charge the round, release to fire",
+        "Shift: afterburner. Nothing slows you down out here, so watch your speed",
+        "LMB: hold to charge a round, release to fire. A full charge cracks a crust open",
         "F: full stop | F3: debug | ESC: menu",
     };
 
     public override void Load()
     {
-        Rlgl.SetClipPlanes(0.5, FarClipPlane);
+        Rlgl.SetClipPlanes(NearClipPlane, FarClipPlane);
 
         _shader = new TerrainShader
         {
             // Fog makes no sense in vacuum, so its range sits far behind every orbit
-            FogStart = 12000f,
-            FogEnd = 19000f,
+            FogStart = 180000f,
+            FogEnd = 250000f,
         };
 
         _renderer = new VoxelBodyRenderer();
         _particles = new ParticleSystem();
-        _stars = new StarField(fullSphere: true, distance: 9000f, starCount: 700);
+        _debris = new DebrisField(_particles);
+        _stars = new StarField(fullSphere: true, distance: 160000f, starCount: 900);
 
         Context.Audio.Define("shot", SfxShape.Shot);
         Context.Audio.Define("impact", SfxShape.Explosion);
         Context.Audio.Define("bump", SfxShape.Hit);
+        Context.Audio.Define("detonate", new SfxShape(2.2f, 150f, 25f, 0.95f, 1.8f));
 
         _cannon = new VoxelCannon(_particles, Context.Audio);
-        _ship = new FreeFlyController(new Vector3(0f, 70f, 340f), Context.Settings, yaw: 180f, pitch: -8f);
-        _camera = _ship.Update(0f);
 
         BuildSystem();
+
+        // Meshing every body up front: without it the system would visibly pop into existence
+        foreach (CelestialBody body in _bodies)
+            _renderer.Prewarm(body.Body);
+
+        StartNearFirstPlanet();
     }
 
     private void BuildSystem()
     {
-        CelestialBody ferra = Planet("Ferra", orbit: 300f, scale: 1.6f, speed: 0.100f, tilt: 0.05f,
-            radius: 14f, crust: Materials.Iron, core: Materials.IronCore, seed: 11, spin: 0.25f);
+        CelestialBody ferra = Planet("Ferra", orbit: 7000f, grid: 64, radius: 29f, scale: 18f,
+            speed: 0.055f, tilt: 0.04f, spin: 0.05f, gravity: 70f,
+            crust: Materials.Iron, core: Materials.IronCore, seed: 11);
 
-        CelestialBody verdis = Planet("Verdis", orbit: 560f, scale: 2.4f, speed: 0.062f, tilt: -0.09f,
-            radius: 15f, crust: Materials.Grass, core: Materials.Soil, seed: 27, spin: 0.18f);
+        CelestialBody verdis = Planet("Verdis", orbit: 11500f, grid: 96, radius: 44f, scale: 16f,
+            speed: 0.038f, tilt: -0.08f, spin: 0.04f, gravity: 90f,
+            crust: Materials.Grass, core: Materials.Soil, seed: 27);
 
-        CelestialBody cryon = Planet("Cryon", orbit: 820f, scale: 2.1f, speed: 0.041f, tilt: 0.21f,
-            radius: 15f, crust: Materials.Ice, core: Materials.IceCore, seed: 44, spin: 0.12f);
+        CelestialBody cryon = Planet("Cryon", orbit: 16500f, grid: 96, radius: 44f, scale: 14f,
+            speed: 0.027f, tilt: 0.19f, spin: 0.03f, gravity: 80f,
+            crust: Materials.Ice, core: Materials.IceCore, seed: 44);
 
-        CelestialBody tharos = Planet("Tharos", orbit: 1180f, scale: 3.0f, speed: 0.027f, tilt: -0.16f,
-            radius: 15f, crust: Materials.Basalt, core: Materials.Magma, seed: 63, spin: 0.09f);
+        CelestialBody tharos = Planet("Tharos", orbit: 23000f, grid: 96, radius: 44f, scale: 22f,
+            speed: 0.019f, tilt: -0.13f, spin: 0.025f, gravity: 110f,
+            crust: Materials.Basalt, core: Materials.Magma, seed: 63, volatileCore: true);
 
-        Moon("Kell", verdis, orbit: 120f, scale: 0.75f, speed: 0.42f, tilt: 0.35f, radius: 11f, seed: 71);
-        Moon("Orin", tharos, orbit: 165f, scale: 0.9f, speed: 0.30f, tilt: -0.5f, radius: 12f, seed: 88);
-        Moon("Vex", tharos, orbit: 240f, scale: 0.6f, speed: 0.21f, tilt: 0.62f, radius: 10f, seed: 95);
+        CelestialBody ashkar = Planet("Ashkar", orbit: 31000f, grid: 64, radius: 29f, scale: 20f,
+            speed: 0.014f, tilt: 0.27f, spin: 0.06f, gravity: 75f,
+            crust: Materials.Ash, core: Materials.Magma, seed: 81, volatileCore: true);
+
+        CelestialBody nyx = Planet("Nyx", orbit: 40000f, grid: 96, radius: 44f, scale: 18f,
+            speed: 0.010f, tilt: -0.22f, spin: 0.02f, gravity: 95f,
+            crust: Materials.Sand, core: Materials.Sandstone, seed: 97);
+
+        Moon("Kell", verdis, orbit: 2100f, grid: 32, radius: 14f, scale: 11f, speed: 0.20f, tilt: 0.32f,
+            material: Materials.MoonRock, seed: 71);
+        Moon("Dun", verdis, orbit: 3400f, grid: 32, radius: 12f, scale: 8f, speed: 0.13f, tilt: -0.44f,
+            material: Materials.RustMoon, seed: 74);
+
+        Moon("Sill", cryon, orbit: 2600f, grid: 32, radius: 14f, scale: 10f, speed: 0.16f, tilt: 0.51f,
+            material: Materials.IceMoon, seed: 78);
+
+        Moon("Orin", tharos, orbit: 3000f, grid: 64, radius: 27f, scale: 9f, speed: 0.14f, tilt: -0.36f,
+            material: Materials.MoonRock, seed: 88);
+        Moon("Vex", tharos, orbit: 4600f, grid: 32, radius: 13f, scale: 9f, speed: 0.09f, tilt: 0.58f,
+            material: Materials.RustMoon, seed: 95);
+
+        Moon("Ember", ashkar, orbit: 2200f, grid: 32, radius: 13f, scale: 8f, speed: 0.19f, tilt: -0.6f,
+            material: Materials.MoonRock, seed: 102);
+
+        Moon("Thale", nyx, orbit: 2800f, grid: 32, radius: 14f, scale: 12f, speed: 0.12f, tilt: 0.24f,
+            material: Materials.IceMoon, seed: 109);
+        Moon("Bram", nyx, orbit: 4200f, grid: 32, radius: 11f, scale: 9f, speed: 0.08f, tilt: -0.47f,
+            material: Materials.MoonRock, seed: 115);
+
+        Moon("Halo", ferra, orbit: 1600f, grid: 32, radius: 11f, scale: 7f, speed: 0.24f, tilt: 0.4f,
+            material: Materials.IceMoon, seed: 121);
     }
 
-    private CelestialBody Planet(string name, float orbit, float scale, float speed, float tilt,
-        float radius, byte crust, byte core, int seed, float spin)
+    private CelestialBody Planet(string name, float orbit, int grid, float radius, float scale,
+        float speed, float tilt, float spin, float gravity, byte crust, byte core, int seed,
+        bool volatileCore = false)
     {
-        var body = new VoxelBody { Name = name, VoxelScale = scale, SpinSpeed = spin };
-        body.FillSphere(radius, crust, core, seed, roughness: 0.14f, coreDepth: 4);
+        var body = new VoxelBody(name, grid, scale, spin);
+        body.FillSphere(radius, crust, core, seed, roughness: 0.10f,
+            crustDepth: volatileCore ? VolatileCrustDepth : CrustDepth);
 
         var celestial = new CelestialBody
         {
@@ -121,6 +186,8 @@ public sealed class SolarSystemGame : Game
             OrbitSpeed = speed,
             OrbitTilt = tilt,
             OrbitPhase = seed * 0.37f,
+            SurfaceGravity = gravity,
+            VolatileCore = volatileCore ? core : BlockRegistry.Air,
         };
 
         celestial.TakeCensus();
@@ -130,11 +197,11 @@ public sealed class SolarSystemGame : Game
         return celestial;
     }
 
-    private void Moon(string name, CelestialBody parent, float orbit, float scale, float speed, float tilt,
-        float radius, int seed)
+    private void Moon(string name, CelestialBody parent, float orbit, int grid, float radius, float scale,
+        float speed, float tilt, byte material, int seed)
     {
-        var body = new VoxelBody { Name = name, VoxelScale = scale, SpinSpeed = 0.4f };
-        body.FillSphere(radius, Materials.MoonRock, Materials.MoonRock, seed, roughness: 0.26f, coreDepth: 32);
+        var body = new VoxelBody(name, grid, scale, 0.12f);
+        body.FillSphere(radius, material, material, seed, roughness: 0.22f, crustDepth: grid);
 
         var celestial = new CelestialBody
         {
@@ -144,6 +211,7 @@ public sealed class SolarSystemGame : Game
             OrbitSpeed = speed,
             OrbitTilt = tilt,
             OrbitPhase = seed * 0.61f,
+            SurfaceGravity = 25f,
         };
 
         celestial.TakeCensus();
@@ -151,14 +219,40 @@ public sealed class SolarSystemGame : Game
         _bodies.Add(celestial);
     }
 
+    /// <summary>Start next to a planet rather than in empty space, so the scale reads immediately</summary>
+    private void StartNearFirstPlanet()
+    {
+        CelestialBody first = _bodies[0];
+        float radius = first.Body.SurfaceRadius;
+
+        _ship = new FreeFlyController(
+            first.Body.Position + new Vector3(radius * 1.4f, radius * 0.9f, radius * 3.6f),
+            Context.Settings)
+        {
+            Thrust = 260f,
+            BoostMultiplier = 5f,
+            MaxSpeed = 1400f,
+
+            // A vacuum does not slow you down, and an orbit only survives without damping
+            Damping = 0f,
+        };
+
+        _ship.PointAt(first.Body.Position);
+        _camera = _ship.Update(0f);
+    }
+
     public override void Update(float dt)
     {
         _time += dt;
+        _flash = MathF.Max(0f, _flash - dt * 1.4f);
 
         // Planets before their moons: a moon's orbit hangs off its planet's current position
         foreach (CelestialBody body in _bodies)
             body.Advance(dt);
 
+        UpdateDetonations(dt);
+
+        _ship.ExternalAcceleration = GravityAt(_ship.Position);
         _camera = _ship.Update(dt);
 
         if (Raylib.IsKeyPressed(KeyboardKey.F)) _ship.Halt();
@@ -167,26 +261,144 @@ public sealed class SolarSystemGame : Game
         if (Raylib.IsMouseButtonReleased(MouseButton.Left))
             _cannon.Release(_ship.Position, _ship.Forward, _ship.Velocity);
 
-        _cannon.Update(dt, _bodies, OnShotHit);
+        _cannon.Update(dt, TryHit);
+        _debris.Update(dt, GravityAt, IsInsideSolid);
         _particles.Update(null, dt);
 
         KeepShipOutOfSolids();
     }
 
-    private void OnShotHit(CelestialBody target, Vector3 point, float blastRadius)
+    /// <summary>Everything a round can run into: loose rubble first, then the bodies themselves</summary>
+    private bool TryHit(Vector3 point, float blastRadius, float shotSize)
     {
-        int removed = target.Body.Carve(point, blastRadius);
-        target.RegisterCarve(removed);
+        int chunk = _debris.FindHit(point, shotSize * 0.5f);
+        if (chunk >= 0)
+        {
+            (Vector3 position, Color color, float size) = _debris.Shatter(chunk);
+            _particles.SpawnExplosion(position, color, size * 0.08f);
+            _hits++;
+            return true;
+        }
 
-        _hits++;
-        _voxelsDestroyed += removed;
+        foreach (CelestialBody celestial in _bodies)
+        {
+            if (celestial.Destroyed) continue;
 
+            // Cheap bounding-sphere test before converting the point into the voxel grid
+            float reach = celestial.Body.BoundingRadius;
+            if (Vector3.DistanceSquared(point, celestial.Body.Position) > reach * reach) continue;
+            if (!celestial.Body.IsSolidAt(point)) continue;
+
+            HitBody(celestial, point, blastRadius);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void HitBody(CelestialBody target, Vector3 point, float blastRadius)
+    {
         Vector3 local = target.Body.ToLocal(point);
         Color debris = TerrainColors.ForBlock(
             target.Body.Get((int)local.X, (int)local.Y, (int)local.Z),
             (int)local.X, (int)local.Y, (int)local.Z);
 
+        int removed = target.Body.Carve(point, blastRadius, target.VolatileCore, out int coreHits);
+        target.RegisterCarve(removed);
+
+        _hits++;
+        _voxelsDestroyed += removed;
+
         _cannon.SpawnImpact(point, debris, blastRadius);
+
+        // Rubble flies off along the surface normal, carried along by the body's own motion
+        Vector3 outward = Vector3.Normalize(point - target.Body.Position);
+        _debris.Spawn(
+            point + outward * blastRadius * 0.3f,
+            target.Velocity,
+            debris,
+            target.Body.VoxelScale * 1.4f,
+            blastRadius * 0.5f,
+            Math.Clamp(removed / 60, 2, 14));
+
+        if (coreHits > 0) BeginDetonation(target);
+    }
+
+    private void BeginDetonation(CelestialBody target)
+    {
+        if (target.Detonating) return;
+
+        target.Detonate();
+        Context.Audio.Play("detonate", 1f, 0.9f);
+        _flash = 1f;
+    }
+
+    /// <summary>
+    /// A breached core eats its way outwards. Carving is a sweep over the whole grid, so it runs in
+    /// a handful of steps rather than every frame, and each step throws off rubble and fire.
+    /// </summary>
+    private void UpdateDetonations(float dt)
+    {
+        foreach (CelestialBody celestial in _bodies)
+        {
+            if (!celestial.Detonating || celestial.Destroyed) continue;
+
+            celestial.AdvanceDetonation(dt);
+
+            float progress = Math.Clamp(celestial.DetonationTime / DetonationSeconds, 0f, 1f);
+            int step = (int)(progress * DetonationSteps);
+
+            while (celestial.DetonationStep < step)
+            {
+                celestial.DetonationStep++;
+                float radius = celestial.Body.BoundingRadius * (celestial.DetonationStep / (float)DetonationSteps);
+
+                int removed = celestial.Body.Carve(celestial.Body.Position, radius);
+                celestial.RegisterCarve(removed);
+                _voxelsDestroyed += removed;
+
+                Vector3 shell = celestial.Body.Position + RandomDirection() * radius * 0.8f;
+                _particles.SpawnExplosion(shell, new Color(255, 150, 60, 255), radius / 30f);
+                _debris.Spawn(shell, celestial.Velocity, new Color(210, 110, 70, 255),
+                    celestial.Body.VoxelScale * 1.8f, radius * 0.5f, 10);
+            }
+
+            if (progress >= 1f) celestial.MarkDestroyed();
+        }
+    }
+
+    /// <summary>The pull of every body plus the sun, which is what makes an orbit possible</summary>
+    private Vector3 GravityAt(Vector3 point)
+    {
+        Vector3 sum = Vector3.Zero;
+
+        foreach (CelestialBody celestial in _bodies)
+            sum += celestial.GravityAt(point);
+
+        float distance = point.Length();
+        if (distance > 1e-3f)
+        {
+            float effective = MathF.Max(distance, SunRadius);
+            sum -= point / distance * (SunSurfaceGravity * SunRadius * SunRadius / (effective * effective));
+        }
+
+        return sum;
+    }
+
+    private bool IsInsideSolid(Vector3 point)
+    {
+        if (point.LengthSquared() < SunRadius * SunRadius) return true;
+
+        foreach (CelestialBody celestial in _bodies)
+        {
+            if (celestial.Destroyed) continue;
+
+            float reach = celestial.Body.BoundingRadius;
+            if (Vector3.DistanceSquared(point, celestial.Body.Position) > reach * reach) continue;
+            if (celestial.Body.IsSolidAt(point)) return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -197,16 +409,18 @@ public sealed class SolarSystemGame : Game
     private void KeepShipOutOfSolids()
     {
         float sunDistance = _ship.Position.Length();
-        if (sunDistance < SunRadius + 4f)
+        if (sunDistance < SunRadius + 40f)
         {
             Vector3 outward = sunDistance < 1e-3f ? Vector3.UnitY : _ship.Position / sunDistance;
-            _ship.Teleport(outward * (SunRadius + 4f));
+            _ship.Teleport(outward * (SunRadius + 40f));
             Context.Audio.Play("bump", 0.5f);
             return;
         }
 
         foreach (CelestialBody celestial in _bodies)
         {
+            if (celestial.Destroyed) continue;
+
             VoxelBody body = celestial.Body;
 
             float reach = body.BoundingRadius;
@@ -218,7 +432,7 @@ public sealed class SolarSystemGame : Game
 
             // Step outwards until the spot is free, at most as far as the bounding sphere
             Vector3 position = _ship.Position;
-            for (int step = 0; step < 64 && body.IsSolidAt(position); step++)
+            for (int step = 0; step < 96 && body.IsSolidAt(position); step++)
                 position += outward * body.VoxelScale;
 
             _ship.Teleport(position);
@@ -238,16 +452,77 @@ public sealed class SolarSystemGame : Game
 
         _renderer.BeginFrame();
 
-        var sunColor = new Vector3(1.30f, 1.20f, 1.02f);
-        var ambient = new Vector3(0.10f, 0.11f, 0.15f);
+        var sunColor = new Vector3(1.35f, 1.24f, 1.05f);
+        var ambient = new Vector3(0.07f, 0.08f, 0.12f);
+
+        Span<Vector4> casters = stackalloc Vector4[TerrainShader.MaxShadowCasters];
 
         foreach (CelestialBody celestial in _bodies)
-            _renderer.Draw(celestial.Body, _shader, Vector3.Zero, sunColor, ambient, _camera.Position);
+        {
+            if (celestial.Destroyed) continue;
 
-        // Muzzle down and to the right rather than dead centre, or the growing ball hides the target
-        _cannon.DrawCharge(_ship.Position + _ship.Forward * 6f + _ship.Right * 1.5f - Vector3.UnitY * 1.1f);
+            int count = CollectShadowCasters(celestial, casters);
+            _renderer.Draw(celestial.Body, _shader, Vector3.Zero, sunColor, ambient, _camera.Position, casters[..count]);
+        }
+
+        DrawDetonations();
+
         _cannon.Draw();
+        _debris.Draw();
         _particles.Draw();
+    }
+
+    /// <summary>
+    /// The bodies that can put a shadow on this one: near neighbours that sit on its sunward side.
+    /// In practice that means a planet and its moons, which is exactly where a shadow shows.
+    /// </summary>
+    private int CollectShadowCasters(CelestialBody target, Span<Vector4> buffer)
+    {
+        Vector3 position = target.Body.Position;
+        float distanceToSun = position.Length();
+        if (distanceToSun < 1e-3f) return 0;
+
+        Vector3 toSun = -position / distanceToSun;
+        float range = target.Body.SurfaceRadius * 16f;
+
+        int count = 0;
+
+        foreach (CelestialBody other in _bodies)
+        {
+            if (ReferenceEquals(other, target) || other.Destroyed) continue;
+
+            Vector3 relative = other.Body.Position - position;
+            if (relative.LengthSquared() > range * range) continue;
+
+            // Anything behind the target cannot stand between it and the sun
+            if (Vector3.Dot(relative, toSun) <= 0f) continue;
+
+            buffer[count++] = new Vector4(other.Body.Position, other.Body.SurfaceRadius);
+            if (count == buffer.Length) break;
+        }
+
+        return count;
+    }
+
+    private void DrawDetonations()
+    {
+        Raylib.BeginBlendMode(BlendMode.Additive);
+
+        foreach (CelestialBody celestial in _bodies)
+        {
+            if (!celestial.Detonating || celestial.Destroyed) continue;
+
+            // The fireball follows the visible surface, not the bounding sphere: sized off the
+            // latter it swallows the camera and washes the whole screen in flat orange
+            float progress = Math.Clamp(celestial.DetonationTime / DetonationSeconds, 0f, 1f);
+            float radius = celestial.Body.SurfaceRadius * (0.35f + progress * 1.15f);
+            byte alpha = (byte)(120 * (1f - progress));
+
+            Raylib.DrawSphereEx(celestial.Body.Position, radius, 16, 16,
+                new Color((byte)255, (byte)(190 - 90 * progress), (byte)80, alpha));
+        }
+
+        Raylib.EndBlendMode();
     }
 
     /// <summary>
@@ -256,7 +531,7 @@ public sealed class SolarSystemGame : Game
     /// </summary>
     private void DrawSun()
     {
-        Raylib.DrawSphereEx(Vector3.Zero, SunRadius, 24, 24, new Color(255, 232, 150, 255));
+        Raylib.DrawSphereEx(Vector3.Zero, SunRadius, 32, 32, new Color(255, 232, 150, 255));
 
         Raylib.BeginBlendMode(BlendMode.Additive);
 
@@ -266,7 +541,7 @@ public sealed class SolarSystemGame : Game
         };
 
         foreach ((float scale, byte alpha) in corona)
-            Raylib.DrawSphereEx(Vector3.Zero, SunRadius * scale, 16, 16, new Color((byte)255, (byte)178, (byte)70, alpha));
+            Raylib.DrawSphereEx(Vector3.Zero, SunRadius * scale, 20, 20, new Color((byte)255, (byte)178, (byte)70, alpha));
 
         Raylib.EndBlendMode();
     }
@@ -289,33 +564,43 @@ public sealed class SolarSystemGame : Game
         int width = Context.ScreenWidth;
         int height = Context.ScreenHeight;
 
+        if (_flash > 0f)
+            Raylib.DrawRectangle(0, 0, width, height, new Color((byte)255, (byte)220, (byte)170, (byte)(150 * _flash)));
+
         Hud.Crosshair(width, height, new Color(255, 220, 120, 255));
         DrawChargeMeter(width, height);
 
         CelestialBody? target = FindTarget();
         if (target != null)
         {
-            float distance = Vector3.Distance(_camera.Position, target.Body.Position) - target.Body.BoundingRadius;
+            float altitude = Vector3.Distance(_camera.Position, target.Body.Position) - target.Body.SurfaceRadius;
 
             Hud.Text(target.Name, 16, 40, 26, Hud.Accent);
-            Hud.Text($"{MathF.Max(0f, distance):0} m", 16, 72, 20);
+            Hud.Text($"{MathF.Max(0f, altitude):0} m", 16, 72, 20);
 
             Color integrityColor = target.Integrity > 0.6f
                 ? new Color(120, 220, 140, 255)
                 : target.Integrity > 0.25f ? new Color(240, 200, 90, 255) : new Color(230, 90, 80, 255);
 
             Hud.Bar(16, 98, 220, 22, target.Integrity, integrityColor, $"{target.Integrity * 100f:0}% intact");
+
+            if (target.Detonating) Hud.Text("CORE BREACH", 16, 126, 22, Hud.Warning);
         }
 
-        Hud.Text($"{_ship.Speed:0} m/s{(_ship.Boosting ? "  BOOST" : "")}", 16, height - 74, 20,
-            _ship.Boosting ? Hud.Warning : Hud.Ink);
-        Hud.Text($"Hits {_hits} | Voxels blasted {_voxelsDestroyed}", 16, height - 48, 18);
+        float gravity = GravityAt(_ship.Position).Length();
 
-        Hud.Centered("Hold LMB to charge | Shift boost | F brake | ESC menu", width / 2, height - 40, 16);
+        Hud.Text($"{_ship.Speed:0} m/s{(_ship.Boosting ? "  BOOST" : "")}", 16, height - 98, 20,
+            _ship.Boosting ? Hud.Warning : Hud.Ink);
+        Hud.Text($"gravity {gravity:0.0} m/s2", 16, height - 72, 18,
+            gravity > 20f ? Hud.Warning : Hud.Ink);
+        Hud.Text($"Hits {_hits} | Voxels blasted {_voxelsDestroyed}", 16, height - 46, 18);
+
+        Hud.Centered("Hold LMB to charge | Shift boost | F full stop | ESC menu", width / 2, height - 40, 16);
 
         if (!Context.DebugOverlay) return;
 
-        Hud.Text($"Shots {_cannon.ActiveShots} | Particles {_particles.ActiveParticles}", 16, 130, 18, Color.SkyBlue);
+        Hud.Text($"Shots {_cannon.ActiveShots} | Debris {_debris.Count} | Particles {_particles.ActiveParticles}",
+            16, 160, 18, Color.SkyBlue);
     }
 
     /// <summary>Charge bar right under the crosshair, where the eye already is while aiming</summary>
@@ -348,6 +633,8 @@ public sealed class SolarSystemGame : Game
 
         foreach (CelestialBody celestial in _bodies)
         {
+            if (celestial.Destroyed) continue;
+
             Vector3 delta = celestial.Body.Position - _camera.Position;
             float distance = delta.Length();
             if (distance < 1e-3f) continue;
@@ -360,7 +647,7 @@ public sealed class SolarSystemGame : Game
 
             // Big bodies may sit further off the axis and still count as the target
             float alignment = Vector3.Dot(delta / distance, forward);
-            float slack = celestial.Body.BoundingRadius / distance * 0.6f;
+            float slack = celestial.Body.SurfaceRadius / distance * 0.8f;
 
             if (alignment + slack <= bestAlignment) continue;
 
@@ -369,6 +656,20 @@ public sealed class SolarSystemGame : Game
         }
 
         return aimed ?? nearest;
+    }
+
+    private static Vector3 RandomDirection()
+    {
+        while (true)
+        {
+            var candidate = new Vector3(
+                Random.Shared.NextSingle() * 2f - 1f,
+                Random.Shared.NextSingle() * 2f - 1f,
+                Random.Shared.NextSingle() * 2f - 1f);
+
+            float lengthSquared = candidate.LengthSquared();
+            if (lengthSquared is > 0.0001f and <= 1f) return candidate / MathF.Sqrt(lengthSquared);
+        }
     }
 
     public override void Unload()
