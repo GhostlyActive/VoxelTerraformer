@@ -5,17 +5,17 @@ using System.Text.Json;
 namespace VoxelEngine.World;
 
 /// <summary>
-/// Ein manueller Spielstand je Slot: veränderte Chunks als deflate-komprimierte Dateien
-/// plus eine Meta-Datei (Spielerposition, Tageszeit) im Benutzerprofil (AppData bzw. ~/.config).
-/// Jedes Spiel bekommt seinen eigenen Slot und überschreibt damit nie den eines anderen.
+/// One manual save per slot: the changed chunks as deflate-compressed files plus a meta file
+/// (player position, time of day) in the user profile (AppData or ~/.config). Every game gets its
+/// own slot and therefore never overwrites another one's.
 /// </summary>
 public sealed class WorldStorage
 {
-    private const byte FormatVersion = 4; // v4: Blöcke + Sub-Voxel-Dichtefeld (512 Byte je bearbeitetem Block)
+    private const byte FormatVersion = 4; // v4: blocks plus sub-voxel density field (512 bytes per edited block)
 
     private sealed class WorldMeta
     {
-        public int Version { get; set; } // fehlt bei alten Spielständen → 0 → inkompatibel
+        public int Version { get; set; } // missing in old saves, so 0, so incompatible
         public float PlayerX { get; set; }
         public float PlayerY { get; set; }
         public float PlayerZ { get; set; }
@@ -35,10 +35,10 @@ public sealed class WorldStorage
 
     private string MetaPath => Path.Combine(_directory, "meta.json");
 
-    // Die Meta-Datei ist der Marker dafür, dass ein Spielstand existiert
+    // The meta file is the marker that a save exists
     public bool HasSave => File.Exists(MetaPath);
 
-    /// <summary>Spielstand vorhanden UND im aktuellen Format? Sonst würde "Load" still eine frische Welt liefern.</summary>
+    /// <summary>Is there a save AND is it in the current format? Otherwise "Load" would quietly hand back a fresh world.</summary>
     public bool HasCompatibleSave => ReadMeta() is { } meta && meta.Version == FormatVersion;
 
     private WorldMeta? ReadMeta()
@@ -54,7 +54,7 @@ public sealed class WorldStorage
         }
     }
 
-    /// <summary>Alten Spielstand komplett entfernen (bevor ein neuer geschrieben wird)</summary>
+    /// <summary>Remove an old save completely, before a new one is written</summary>
     public void DeleteAll()
     {
         try
@@ -65,7 +65,7 @@ public sealed class WorldStorage
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Best-Effort — schlimmstenfalls bleiben verwaiste Dateien liegen
+            // Best effort; at worst some orphaned files stay behind
         }
     }
 
@@ -124,13 +124,13 @@ public sealed class WorldStorage
             if (data.Length != expectedLength) return false;
 
             int count = reader.ReadInt32();
-            if (count < 0 || count > expectedLength) return false; // offensichtlich kaputt
+            if (count < 0 || count > expectedLength) return false; // clearly broken
 
             var loadedRefinements = new Dictionary<int, byte[]>(count);
             for (int i = 0; i < count; i++)
             {
                 int index = reader.ReadInt32();
-                if (index < 0 || index >= expectedLength) return false; // korrupte Daten
+                if (index < 0 || index >= expectedLength) return false; // corrupt data
 
                 byte[] field = reader.ReadBytes(SubVoxels.CellCount);
                 if (field.Length != SubVoxels.CellCount) return false;
@@ -143,8 +143,8 @@ public sealed class WorldStorage
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or EndOfStreamException or InvalidDataException)
         {
-            // Unlesbare/korrupte Datei (InvalidDataException: kaputte Deflate-Daten)
-            // → Chunk wird frisch generiert statt zu crashen
+            // Unreadable or corrupt file (InvalidDataException: broken deflate data):
+            // the chunk is generated fresh instead of crashing
             blocks = null;
             refinements = null;
             return false;
@@ -175,7 +175,7 @@ public sealed class WorldStorage
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Fehlschlag meldet der Aufrufer dem Spieler ("Save failed")
+            // The caller reports the failure to the player ("Save failed")
             return false;
         }
     }

@@ -15,8 +15,8 @@ Press **ESC → Games** to switch. Every game runs in the same window and shares
 | Game | What you do |
 | --- | --- |
 | **Free Walk** | The sandbox. Endless world, no goal: build, dig, cycle the three voxel modes, turn the dials. This is where the project starts. |
-| **Rocket Storm** | Survive waves of incoming rockets in Smooth mode. Every impact tears a round crater out of the ground — and since the sphere brush stays live, you can dig yourself a hole and ride it out. |
-| **Solar System** | Fly out to voxel planets and moons on their orbits and shoot them apart. Hits remove real voxels: keep firing and the crust opens up to the core underneath. |
+| **Rocket Storm** | Survive waves of incoming rockets in Smooth mode. Every impact tears a round crater out of the ground — and since the sphere brush stays live, you can dig yourself a hole and ride it out. Fixed sun, no night. |
+| **Solar System** | Fly out to voxel planets and moons on their orbits and shoot them apart. Hold the trigger to pack a bigger round: a tap sends a fast pellet, a full charge lobs a boulder that takes a bite out of a moon. Hits remove real voxels, so the crust opens up to the core underneath. |
 
 ---
 
@@ -64,6 +64,8 @@ round, and no game can reach into another.
   and voxel mode; call `Update` and `Draw`.
 - **World building** — plug in an `ITerrainGenerator` (or tune `DefaultTerrainGenerator`),
   register your own block materials, cut spheres out of the terrain with `Explode`.
+- **Light** — run the day/night cycle or pin the sun, and set its angle in degrees: 0 is sunrise,
+  90 the highest point, 180 sunset. Free Walk and Rocket Storm both use a fixed sun.
 - **`VoxelBody`** — a free-standing voxel object with its own position, scale and spin, for
   planets and asteroids. Carve it with a sphere and it remeshes itself.
 - **Controls** — `PlayerController` (walk, jump, sub-voxel collision) and `FreeFlyController`
@@ -93,11 +95,11 @@ It shows up under **ESC → Games**. See [Games/README.md](Games/README.md) for 
 | **W / A / S / D**, Mouse | Move and look (fly, in Solar System) |
 | **Shift** | Sprint / afterburner |
 | **Space** | Jump — climb, in Solar System |
-| **Left / Right Mouse** | Remove / place (hold in Sculpt and Smooth) — fire, in Solar System |
+| **Left / Right Mouse** | Remove / place (hold in Sculpt and Smooth); in Solar System, hold to charge a round and release to fire |
 | **Mouse wheel** | Build distance |
 | **Ctrl + Mouse wheel** | Brush size |
 | **V** | Switch voxel mode |
-| **Z / U** | Slower / faster day |
+| **Z / U** | Move the sun (or change the clock speed in a game that runs one) |
 | **M** | Tuning menu |
 | **F3** | Debug overlay |
 | **ESC** | Pause menu — games, save, load, quit |

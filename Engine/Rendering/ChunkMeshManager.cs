@@ -7,9 +7,9 @@ using VoxelEngine.World;
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Hält pro Chunk ein GPU-Mesh und baut es bei Änderungen im Hintergrund neu.
-/// Snapshot und Upload laufen auf dem Main-Thread (GL-Kontext), das eigentliche Meshing
-/// auf einem Worker-Thread — das alte Mesh bleibt sichtbar, bis das neue fertig ist.
+/// Keeps one GPU mesh per chunk and rebuilds it in the background when something changes.
+/// Snapshot and upload run on the main thread (GL context), the meshing itself on a worker thread;
+/// the old mesh stays visible until the new one is ready.
 /// </summary>
 public sealed class ChunkMeshManager : IDisposable
 {
@@ -28,15 +28,15 @@ public sealed class ChunkMeshManager : IDisposable
     private readonly HashSet<ChunkCoord> _inFlight = new();
     private readonly List<ChunkCoord> _startable = new();
 
-    // Zählt pro Koordinate die Entladungen: Ergebnisse alter Generationen (z. B. von vor
-    // einem "Load world") werden verworfen, auch wenn die Koordinate wieder belegt ist
+    // Counts unloads per coordinate: results from older generations (from before a "Load world",
+    // for instance) are discarded even when the coordinate is occupied again
     private readonly Dictionary<ChunkCoord, int> _generations = new();
 
     private readonly BlockingCollection<MeshJob> _jobs = new();
     private readonly ConcurrentQueue<MeshResult> _results = new();
     private readonly Thread[] _workers;
 
-    /// <summary>Marching-Cubes-Darstellung statt kantiger Würfel (Smooth-Modus)</summary>
+    /// <summary>Marching-cubes presentation instead of hard-edged cubes (Smooth mode)</summary>
     public bool SmoothRendering { get; private set; }
 
     public int VisibleChunks { get; private set; }
@@ -50,8 +50,8 @@ public sealed class ChunkMeshManager : IDisposable
         _world.ChunkDirty += coord => _dirty.Add(coord);
         _world.ChunkUnloaded += OnChunkUnloaded;
 
-        // Mehrere Worker, weil das Marching-Cubes-Meshing deutlich teurer ist als das kantige.
-        // Pro Chunk ist immer nur ein Job unterwegs, deshalb kann kein älteres Mesh ein neueres überholen.
+        // Several workers, because marching-cubes meshing is far more expensive than the blocky
+        // kind. Only one job per chunk is ever in flight, so an older mesh can never overtake a newer one.
         int workerCount = Math.Clamp(Environment.ProcessorCount - 2, 1, 4);
         _workers = new Thread[workerCount];
         for (int i = 0; i < workerCount; i++)
@@ -61,7 +61,7 @@ public sealed class ChunkMeshManager : IDisposable
         }
     }
 
-    /// <summary>Darstellung umschalten — alle geladenen Chunks werden neu gemesht</summary>
+    /// <summary>Switch the presentation; every loaded chunk is remeshed</summary>
     public void SetSmoothRendering(bool smooth)
     {
         if (smooth == SmoothRendering) return;
@@ -74,7 +74,7 @@ public sealed class ChunkMeshManager : IDisposable
     private void OnChunkUnloaded(ChunkCoord coord)
     {
         _dirty.Remove(coord);
-        _generations[coord] = GenerationOf(coord) + 1; // laufende Jobs dieser Koordinate entwerten
+        _generations[coord] = GenerationOf(coord) + 1; // invalidate running jobs for this coordinate
 
         if (_entries.Remove(coord, out Entry? entry) && entry.HasMesh)
             Raylib.UnloadMesh(entry.Mesh);
@@ -83,7 +83,7 @@ public sealed class ChunkMeshManager : IDisposable
     private int GenerationOf(ChunkCoord coord)
         => _generations.TryGetValue(coord, out int generation) ? generation : 0;
 
-    /// <summary>Meshed alle vorhandenen Chunks synchron — einmalig beim Start, damit die Welt komplett dasteht</summary>
+    /// <summary>Meshes every existing chunk synchronously; done once at startup so the world stands complete</summary>
     public void BuildAllNow()
     {
         foreach (Chunk chunk in _world.Chunks)
@@ -104,26 +104,26 @@ public sealed class ChunkMeshManager : IDisposable
 
     public void Update()
     {
-        // Fertige Meshes hochladen — GL-Kontext, deshalb nur hier auf dem Main-Thread
+        // Upload finished meshes: GL context, so only here on the main thread
         while (_results.TryDequeue(out MeshResult result))
         {
             _inFlight.Remove(result.Coord);
-            if (result.Generation != GenerationOf(result.Coord)) continue; // Snapshot eines verworfenen Zustands
-            if (result.Smooth != SmoothRendering) continue; // Darstellung inzwischen umgeschaltet
-            if (!_world.TryGetChunk(result.Coord, out _)) continue; // inzwischen entladen
+            if (result.Generation != GenerationOf(result.Coord)) continue; // snapshot of a discarded state
+            if (result.Smooth != SmoothRendering) continue; // presentation switched in the meantime
+            if (!_world.TryGetChunk(result.Coord, out _)) continue; // unloaded in the meantime
             Upload(result.Coord, result.Data);
         }
 
         if (_dirty.Count == 0) return;
 
-        // Pro Chunk maximal ein Job unterwegs; erneut dirty gewordene bleiben bis zur nächsten Runde in der Menge
+        // At most one job per chunk; anything dirtied again stays in the set until the next round
         _startable.Clear();
         foreach (ChunkCoord coord in _dirty)
             if (!_inFlight.Contains(coord))
                 _startable.Add(coord);
 
-        // Snapshots laufen auf dem Main-Thread — gedrosselt, damit ein Moduswechsel
-        // (alle Chunks auf einmal dirty) keinen Frame-Ruckler erzeugt
+        // Snapshots run on the main thread, throttled so a mode switch (every chunk dirty at once)
+        // does not stutter the frame
         const int maxStartsPerFrame = 12;
         int started = 0;
 
@@ -164,12 +164,12 @@ public sealed class ChunkMeshManager : IDisposable
         int baseX = (int)chunk.WorldPosition.X;
         int baseZ = (int)chunk.WorldPosition.Z;
 
-        // Innenbereich zeilenweise am Stück kopieren
+        // Copy the interior row by row in one go
         for (int y = 0; y < worldHeight; y++)
         for (int z = 0; z < Chunk.Size; z++)
             chunk.CopyRow(y, z, padded, ChunkMesher.Index(0, y, z));
 
-        // 1 Voxel dicke Schale aus der Welt (Nachbar-Chunks) — für Face-Culling und AO an den Grenzen
+        // A one-voxel shell from the world (neighbouring chunks), for face culling and AO at the borders
         for (int y = -1; y <= worldHeight; y++)
         for (int z = -1; z <= Chunk.Size; z++)
         for (int x = -1; x <= Chunk.Size; x++)
@@ -177,7 +177,7 @@ public sealed class ChunkMeshManager : IDisposable
             bool inside = x >= 0 && x < Chunk.Size && z >= 0 && z < Chunk.Size && y >= 0 && y < worldHeight;
             if (inside) continue;
 
-            // Unterhalb der Welt gilt als solide, damit die nie sichtbare Weltunterseite kein Mesh erzeugt
+            // Below the world counts as solid, so the never-visible underside produces no mesh
             padded[ChunkMesher.Index(x, y, z)] = y < 0
                 ? BlockRegistry.Terrain
                 : (byte)_world.GetBlock(baseX + x, y, baseZ + z);
@@ -186,8 +186,8 @@ public sealed class ChunkMeshManager : IDisposable
         return padded;
     }
 
-    // Sub-Voxel-Dichtefelder des Chunks (auf Padded-Indizes umgeschlüsselt) plus die der
-    // direkt angrenzenden Nachbarblöcke — fürs Sub-Culling an den Chunk-Grenzen
+    // The chunk's sub-voxel density fields (rekeyed to padded indices) plus those of the directly
+    // adjacent neighbour blocks, for sub-voxel culling at the chunk borders
     private Dictionary<int, byte[]> SnapshotRefinements(Chunk chunk)
     {
         var refinements = new Dictionary<int, byte[]>();
@@ -210,7 +210,7 @@ public sealed class ChunkMeshManager : IDisposable
             AddBorderRefinement(refinements, baseX + i, y, baseZ + Chunk.Size, i, y, Chunk.Size);
         }
 
-        // Diagonale Eckspalten — der Smooth-Mesher liest die volle 3x3x3-Nachbarschaft
+        // Diagonal corner columns: the smooth mesher reads the full 3x3x3 neighbourhood
         for (int y = 0; y < VoxelWorld.WorldHeight; y++)
         {
             AddBorderRefinement(refinements, baseX - 1, y, baseZ - 1, -1, y, -1);
@@ -296,7 +296,7 @@ public sealed class ChunkMeshManager : IDisposable
         foreach (Thread worker in _workers)
             worker.Join();
 
-        // Übrige Ergebnisse verwerfen — die zugehörigen Meshes werden unten freigegeben
+        // Discard the remaining results; their meshes are released below
         while (_results.TryDequeue(out _)) { }
 
         foreach (Entry entry in _entries.Values)

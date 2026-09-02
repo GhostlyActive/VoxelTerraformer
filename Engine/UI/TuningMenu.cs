@@ -4,10 +4,9 @@ using VoxelEngine.Config;
 namespace VoxelEngine.UI;
 
 /// <summary>
-/// Debug-Tuning-Menü auf Taste M: Pfeiltasten navigieren und ändern Werte live,
-/// R setzt auf Defaults zurück, Schließen speichert. Das Spiel läuft dabei weiter,
-/// damit sich Änderungen sofort erfühlen lassen.
-/// Die Einträge sind in Abschnitte gruppiert; Überschriften lassen sich nicht anwählen.
+/// The tuning menu on key M: the arrow keys navigate and change values live, R restores the
+/// defaults, closing saves. The game keeps running underneath so a change can be felt right away.
+/// Entries are grouped into sections; headings cannot be selected.
 /// </summary>
 public sealed class TuningMenu
 {
@@ -21,7 +20,7 @@ public sealed class TuningMenu
         float Max,
         string Format);
 
-    // Eine Zeile ist entweder eine Abschnitts-Überschrift oder ein Wert; Header == null heißt Wert.
+    // A row is either a section heading or a value; Header == null means value.
     private sealed record Row(string? Header, Entry? Entry);
 
     private readonly EngineSettings _settings;
@@ -33,7 +32,7 @@ public sealed class TuningMenu
 
     public bool IsOpen { get; private set; }
 
-    // Hinter allen Abschnitten liegt die "Reset all"-Zeile
+    // The "Reset all" row sits behind every section
     private int ResetAllRow => _rows.Length;
 
     public TuningMenu(EngineSettings settings)
@@ -59,7 +58,7 @@ public sealed class TuningMenu
             Value("Preview hold s", () => settings.PreviewHold, v => settings.PreviewHold = v, defaults.PreviewHold, 0.25f, 0f, 5f, "0.00"),
 
             Section("WORLD"),
-            Value("Time of day h", () => settings.TimeOfDay, v => settings.TimeOfDay = v, defaults.TimeOfDay, 0.5f, 0f, 24f, "0.0"),
+            Value("Sun angle deg", () => settings.SunAngle, v => settings.SunAngle = v, defaults.SunAngle, 5f, 0f, 360f, "0"),
             Value("Time flow", () => settings.TimeFlow, v => settings.TimeFlow = v, defaults.TimeFlow, 0.25f, 0f, 20f, "0.00"),
             Value("Day length s", () => settings.DayLengthSeconds, v => settings.DayLengthSeconds = v, defaults.DayLengthSeconds, 15f, 30f, 1800f, "0"),
             Value("Fog start", () => settings.FogStart, v => settings.FogStart = v, defaults.FogStart, 10f, 0f, 400f, "0"),
@@ -102,7 +101,7 @@ public sealed class TuningMenu
 
         if (_selectableRows[_selected] == ResetAllRow)
         {
-            // Enter kann je nach Tastatur auch als Numpad-Enter ankommen
+            // Depending on the keyboard, Enter may arrive as numpad Enter
             bool trigger =
                 Raylib.IsKeyPressed(KeyboardKey.Enter) ||
                 Raylib.IsKeyPressed(KeyboardKey.KpEnter) ||
@@ -120,12 +119,12 @@ public sealed class TuningMenu
         if (direction != 0f)
             entry.Set(Math.Clamp(entry.Get() + direction * entry.Step, entry.Min, entry.Max));
 
-        // R setzt nur den ausgewählten Wert zurück; für alles gibt es die "Reset all"-Zeile
+        // R only resets the selected value; the "Reset all" row covers everything
         if (Raylib.IsKeyPressed(KeyboardKey.R))
             entry.Set(entry.Default);
     }
 
-    // Über die Einträge selbst zurücksetzen — so wird garantiert alles erfasst, was im Menü steht
+    // Reset through the entries themselves, which guarantees everything in the menu is covered
     private void ResetAll()
     {
         foreach (Row row in _rows)
@@ -133,7 +132,7 @@ public sealed class TuningMenu
         _resetFlashTimer = 1.5f;
     }
 
-    // Gedrückt halten wiederholt die Eingabe (Key-Repeat des Systems)
+    // Holding a key repeats the input (the system's key repeat)
     private static bool Pressed(KeyboardKey key)
         => Raylib.IsKeyPressed(key) || Raylib.IsKeyPressedRepeat(key);
 
@@ -156,7 +155,7 @@ public sealed class TuningMenu
         int height = Math.Min(bodyTop + contentHeight + 10, maxHeight);
         int viewHeight = height - bodyTop - 10;
 
-        // Auswahl im Blick behalten, falls die Liste länger ist als das Fenster
+        // Keep the selection in view when the list is longer than the window
         _scroll = Math.Clamp(_scroll, RowOffset(_selected) + rowHeight - viewHeight, RowOffset(_selected));
         _scroll = Math.Clamp(_scroll, 0f, Math.Max(0f, contentHeight - viewHeight));
 
@@ -221,7 +220,7 @@ public sealed class TuningMenu
         Raylib.DrawText("Reset ALL to defaults (Enter/R)", x + 16, rowY, 18, color);
     }
 
-    // Pixel-Position einer auswählbaren Zeile im Inhalt — für das Mitscrollen
+    // Pixel position of a selectable row inside the content, for scrolling along
     private float RowOffset(int selectableIndex)
     {
         const int rowHeight = 24;

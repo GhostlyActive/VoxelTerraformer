@@ -4,12 +4,12 @@ using VoxelEngine.World;
 namespace Terraformer.Games.SolarSystem;
 
 /// <summary>
-/// Ein Himmelskörper: ein <see cref="VoxelBody"/> auf einer Kreisbahn. Planeten kreisen um die
-/// Sonne im Ursprung, Monde um ihren Planeten — deshalb kennt jeder Körper optional einen
-/// <see cref="Parent"/>, dessen aktuelle Position der Mittelpunkt seiner Bahn ist.
+/// A celestial body: a <see cref="VoxelBody"/> on a circular orbit. Planets circle the sun at the
+/// origin, moons circle their planet, which is why every body optionally knows a
+/// <see cref="Parent"/> whose current position is the centre of its orbit.
 ///
-/// Die Reihenfolge beim Fortschreiben zählt: ein Mond muss nach seinem Planeten laufen, sonst
-/// hängt er dem Planeten ein Bild hinterher.
+/// Order matters when advancing them: a moon has to run after its planet, otherwise it trails one
+/// frame behind.
 /// </summary>
 public sealed class CelestialBody
 {
@@ -18,32 +18,32 @@ public sealed class CelestialBody
 
     public required VoxelBody Body { get; init; }
 
-    /// <summary>Körper, um den gekreist wird; null heißt: um die Sonne im Ursprung</summary>
+    /// <summary>The body being orbited; null means the sun at the origin</summary>
     public CelestialBody? Parent { get; init; }
 
     public float OrbitRadius { get; init; }
 
-    /// <summary>Winkelgeschwindigkeit in Radiant pro Sekunde</summary>
+    /// <summary>Angular velocity in radians per second</summary>
     public float OrbitSpeed { get; init; }
 
-    /// <summary>Neigung der Bahnebene gegen die XZ-Ebene, in Radiant</summary>
+    /// <summary>Tilt of the orbital plane against the XZ plane, in radians</summary>
     public float OrbitTilt { get; init; }
 
     public float OrbitPhase { get; set; }
 
     public string Name => Body.Name;
 
-    /// <summary>Anteil des Körpers, der noch steht: 1 = unversehrt, 0 = restlos zerlegt</summary>
+    /// <summary>How much of the body is still standing: 1 = untouched, 0 = taken apart</summary>
     public float Integrity => _initialVoxels == 0 ? 0f : _solidVoxels / (float)_initialVoxels;
 
-    /// <summary>Nach dem Füllen einmal aufrufen — legt den Bezugswert der Zerstörungsanzeige fest</summary>
+    /// <summary>Call once after filling the body: fixes the reference value for the damage readout</summary>
     public void TakeCensus()
     {
         _initialVoxels = Body.CountSolid();
         _solidVoxels = _initialVoxels;
     }
 
-    /// <summary>Weggeschossene Voxel verbuchen, statt den ganzen Körper neu zu zählen</summary>
+    /// <summary>Book the voxels that were shot away instead of recounting the whole body</summary>
     public void RegisterCarve(int removedVoxels) => _solidVoxels = Math.Max(0, _solidVoxels - removedVoxels);
 
     public void Advance(float dt)
@@ -55,7 +55,7 @@ public sealed class CelestialBody
         float x = MathF.Cos(OrbitPhase) * OrbitRadius;
         float z = MathF.Sin(OrbitPhase) * OrbitRadius;
 
-        // Bahnebene um die X-Achse kippen: reine Kreise in der XZ-Ebene sähen wie ein Diagramm aus
+        // Tilt the orbital plane about X: flat circles in the XZ plane would look like a diagram
         Body.Position = center + new Vector3(x, z * MathF.Sin(OrbitTilt), z * MathF.Cos(OrbitTilt));
         Body.Advance(dt);
     }

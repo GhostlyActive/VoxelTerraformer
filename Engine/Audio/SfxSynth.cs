@@ -3,10 +3,10 @@ using Raylib_cs;
 namespace VoxelEngine.Audio;
 
 /// <summary>
-/// Beschreibung eines synthetischen Klangs: ein Sinus, der von <see cref="StartHz"/> nach
-/// <see cref="EndHz"/> gleitet, mit <see cref="Noise"/> Rauschen gemischt und von einer
-/// abfallenden Hüllkurve geformt. Damit lassen sich Schuss, Einschlag, Triebwerk und
-/// Menü-Klick brauchbar nachbauen, ohne eine einzige Audiodatei mitzuliefern.
+/// Description of a synthesized sound: a sine sweeping from <see cref="StartHz"/> to
+/// <see cref="EndHz"/>, mixed with <see cref="Noise"/> of noise and shaped by a decaying envelope.
+/// Enough to fake a shot, an impact, a thruster or a menu click without shipping a single audio
+/// file.
 /// </summary>
 public readonly record struct SfxShape(
     float Seconds,
@@ -22,7 +22,7 @@ public readonly record struct SfxShape(
     public static SfxShape Pickup => new(0.22f, 520f, 1180f, 0f, 5f);
 }
 
-/// <summary>Erzeugt aus einer <see cref="SfxShape"/> einen abspielbaren Sound</summary>
+/// <summary>Turns a <see cref="SfxShape"/> into a playable sound</summary>
 public static class SfxSynth
 {
     private const int SampleRate = 22050;
@@ -46,7 +46,7 @@ public static class SfxSynth
             float noise = random.NextSingle() * 2f - 1f;
             float mixed = tone * (1f - shape.Noise) + noise * shape.Noise;
 
-            // Kurzer Anschlag am Anfang, damit der erste Sample kein Knacken erzeugt
+            // Short attack at the start, so the first sample does not click
             float attack = MathF.Min(1f, i / (SampleRate * 0.004f));
             float envelope = attack * MathF.Exp(-shape.Decay * t);
 
@@ -69,8 +69,8 @@ public static class SfxSynth
                 Data = data,
             };
 
-            // LoadSoundFromWave kopiert die Samples in den Audio-Buffer; das gepinnte Array
-            // darf danach wieder wandern, ein UnloadWave wäre hier sogar falsch (fremder Allokator)
+            // LoadSoundFromWave copies the samples into the audio buffer, so the pinned array may
+            // move again afterwards. UnloadWave would even be wrong here: foreign allocator.
             return Raylib.LoadSoundFromWave(wave);
         }
     }

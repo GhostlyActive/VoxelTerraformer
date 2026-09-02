@@ -12,15 +12,15 @@ public enum PauseAction
     Quit,
 }
 
-/// <summary>Ergebnis eines Menü-Frames; <see cref="GameId"/> steht nur bei <see cref="PauseAction.StartGame"/></summary>
+/// <summary>Result of one menu frame; <see cref="GameId"/> is only set for <see cref="PauseAction.StartGame"/></summary>
 public readonly record struct PauseResult(PauseAction Action, string? GameId = null)
 {
     public static readonly PauseResult None = new(PauseAction.None);
 }
 
 /// <summary>
-/// ESC-Menü mit zwei Seiten: Hauptseite (Fortsetzen, Spiele, Speichern, Laden, Beenden) und
-/// die Spieleliste. Solange es offen ist, pausiert das Spiel — der Host wertet <see cref="IsOpen"/> aus.
+/// The ESC menu, in two pages: the main page (continue, games, save, load, quit) and the game
+/// list. While it is open the game is paused; the host reads <see cref="IsOpen"/> for that.
 /// </summary>
 public sealed class PauseMenu
 {
@@ -32,13 +32,13 @@ public sealed class PauseMenu
     private int _selected;
     private string[] _entries = Array.Empty<string>();
 
-    /// <summary>Spiel, das gerade läuft — wird in der Liste markiert</summary>
+    /// <summary>The game currently running; marked in the list</summary>
     public string CurrentGameId { get; set; } = "";
 
-    /// <summary>Blendet Speichern/Laden aus, wenn das laufende Spiel keine Spielstände kennt</summary>
+    /// <summary>Hides save and load when the running game has no saves</summary>
     public bool SavingAvailable { get; set; }
 
-    /// <summary>Tastenbelegung des laufenden Spiels, im Menü unter den Einträgen</summary>
+    /// <summary>Controls of the running game, shown below the entries</summary>
     public IReadOnlyList<string> ControlHints { get; set; } = Array.Empty<string>();
 
     public bool IsOpen { get; private set; }
@@ -50,12 +50,12 @@ public sealed class PauseMenu
 
     public void Close() => IsOpen = false;
 
-    /// <summary>Verarbeitet Eingaben; liefert eine bestätigte Aktion genau einmal</summary>
+    /// <summary>Handles input; reports a confirmed action exactly once</summary>
     public PauseResult Update()
     {
         if (Raylib.IsKeyPressed(KeyboardKey.Escape))
         {
-            // Aus der Spieleliste führt ESC eine Ebene zurück, nicht direkt ins Spiel
+            // From the game list, ESC goes back one level instead of straight into the game
             if (IsOpen && _page == Page.Games) OpenPage(Page.Root);
             else
             {
@@ -111,7 +111,7 @@ public sealed class PauseMenu
         GameEntry entry = _registry.Entries[_selected];
         if (entry.Id == CurrentGameId)
         {
-            // Dasselbe Spiel neu zu starten würde die laufende Welt wegwerfen — nur zurück ins Spiel
+            // Restarting the same game would throw away the running world, so just resume
             IsOpen = false;
             return PauseResult.None;
         }
@@ -128,7 +128,7 @@ public sealed class PauseMenu
 
         if (page != Page.Games) return;
 
-        // Auf dem laufenden Spiel aufsetzen statt oben in der Liste
+        // Start on the running game rather than at the top of the list
         for (int i = 0; i < _registry.Entries.Count; i++)
             if (_registry.Entries[i].Id == CurrentGameId)
                 _selected = i;
@@ -154,7 +154,7 @@ public sealed class PauseMenu
     {
         if (!IsOpen) return;
 
-        // dunkler Schleier über dem eingefrorenen Spiel
+        // dark veil over the frozen game
         Raylib.DrawRectangle(0, 0, screenWidth, screenHeight, new Color(5, 8, 14, 150));
 
         bool showHints = _page == Page.Root && ControlHints.Count > 0;

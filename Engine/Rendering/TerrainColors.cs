@@ -5,31 +5,31 @@ namespace VoxelEngine.Rendering;
 
 public static class TerrainColors
 {
-    // Reines Albedo — Sonne, Ambient und AO kommen erst beim Meshing bzw. im Shader dazu
+    // Pure albedo: sun, ambient and AO are added during meshing and in the shader
     public static Color ForBlock(int id, int wx, int y, int wz)
     {
         BlockDef def = BlockRegistry.Get(id);
         Color baseColor = def.UseHeightGradient ? HeightColor(y) : def.BaseColor;
 
-        // Leichte Per-Voxel-Variation, damit große Flächen nicht steril wirken
+        // A slight per-voxel variation, so large surfaces do not look sterile
         float variation = 0.94f + 0.12f * Hash(wx, y, wz);
         return Scale(baseColor, variation);
     }
 
     private static Color HeightColor(int y)
     {
-        // Höhen-Grenzen (in Block-Y)
-        const int deepBlueEndY = 8;      // 0..8 dunkelblau
-        const int greenEndY = 15;        // ..15 grün
-        const int brownEndY = 24;        // ..24 braun, ab da Übergang zu Schnee
+        // Height bands (in block Y)
+        const int deepBlueEndY = 8;      // 0..8 deep blue
+        const int greenEndY = 15;        // ..15 green
+        const int brownEndY = 24;        // ..24 brown, then the transition to snow
 
-        // unten: dunkelblau
+        // bottom: deep blue
         float dr = 10, dg = 25, db = 80;
-        // grün
+        // green
         float gr = 60, gg = 190, gb = 70;
-        // braun
+        // brown
         float br = 140, bg = 95, bb = 50;
-        // weiß (Schnee)
+        // white (snow)
         float wr = 235, wg = 235, wb = 235;
 
         float r, g, b;
@@ -57,7 +57,7 @@ public static class TerrainColors
         }
         else
         {
-            // weicher Übergang braun -> weiß (+10 = Schneebandbreite)
+            // soft transition brown -> white (+10 = width of the snow band)
             float t = InverseLerp(brownEndY, brownEndY + 10, y);
             r = Lerp(br, wr, t);
             g = Lerp(bg, wg, t);

@@ -19,15 +19,15 @@ public class PlayerController
     private const float Height = 1.80f;
     private const float EyeHeight = 1.62f;
 
-    // Movement-Tuning kommt aus den EngineSettings (Menü auf M) und ist live änderbar
+    // Movement tuning comes from EngineSettings (menu on M) and can be changed live
     private readonly EngineSettings _settings;
 
-    // FOV zieht beim Sprinten leicht auf — verkauft das Tempo spürbar
+    // The field of view widens a little while sprinting, which sells the pace
     private const float SprintFovBoost = 6f;
     private float _fov;
 
-    // Sprung-Feel: kurz nach Kantenabgang darf noch gesprungen werden (Coyote),
-    // und ein knapp zu früher Druck wird bis zur Landung gepuffert
+    // Jump feel: a jump still counts shortly after walking off an edge (coyote time), and a press
+    // that comes in slightly too early is buffered until landing
     private const float CoyoteTime = 0.12f;
     private const float JumpBufferTime = 0.15f;
 
@@ -41,7 +41,7 @@ public class PlayerController
         new Vector3(Position.X - HalfWidth, Position.Y, Position.Z - HalfWidth),
         new Vector3(Position.X + HalfWidth, Position.Y + Height, Position.Z + HalfWidth));
 
-    /// <summary>Setzt den Spieler hart um (z. B. nach dem Laden eines Spielstands)</summary>
+    /// <summary>Moves the player outright, for instance after loading a save</summary>
     public void Teleport(Vector3 position)
     {
         Position = position;
@@ -82,7 +82,7 @@ public class PlayerController
         _velocity.X = move.X;
         _velocity.Z = move.Z;
 
-        // Jump (mit Coyote-Time und Jump-Buffer)
+        // Jump (with coyote time and jump buffer)
         _timeSinceJumpPressed += dt;
         if (Raylib.IsKeyPressed(KeyboardKey.Space)) _timeSinceJumpPressed = 0f;
 
@@ -94,8 +94,8 @@ public class PlayerController
         {
             _velocity.Y = _settings.JumpSpeed;
             _grounded = false;
-            _timeSinceGrounded = CoyoteTime;     // Coyote verbraucht — kein zweiter Sprung aus der Luft
-            _timeSinceJumpPressed = JumpBufferTime; // Buffer verbraucht
+            _timeSinceGrounded = CoyoteTime;     // coyote time spent: no second jump out of mid-air
+            _timeSinceJumpPressed = JumpBufferTime; // buffer spent
         }
 
         // Gravity
@@ -107,20 +107,20 @@ public class PlayerController
 
         // Build camera from player
         float targetFov = _settings.FieldOfView + (sprinting ? SprintFovBoost : 0f);
-        if (_fov <= 0f) _fov = targetFov; // erster Frame: nicht aus dem Nichts hochziehen
+        if (_fov <= 0f) _fov = targetFov; // first frame: do not ramp up from nothing
         _fov += (targetFov - _fov) * Math.Min(1f, 10f * dt);
 
         return BuildCamera();
     }
 
-    /// <summary>Kamera zur aktuellen Position und Blickrichtung, ohne Physik — für gescriptete Aufnahmen</summary>
+    /// <summary>Camera at the current position and heading, without physics</summary>
     public Camera3D CameraOnly()
     {
         if (_fov <= 0f) _fov = _settings.FieldOfView;
         return BuildCamera();
     }
 
-    /// <summary>Blick auf einen Weltpunkt ausrichten (Demo-Ablauf statt Maus)</summary>
+    /// <summary>Aim the view at a point in the world instead of using the mouse</summary>
     public void PointAt(Vector3 target)
     {
         Vector3 eye = Position + new Vector3(0, EyeHeight, 0);
@@ -206,10 +206,10 @@ public class PlayerController
     /// <summary>
     /// axis: 0=x, 1=y, 2=z
     /// Push player out of solid geometry and zero that velocity axis.
-    /// Angeschnitzte Blöcke (Sculpt) kollidieren auf Sub-Voxel-Ebene.
-    /// Erst werden ALLE überlappenden Boxen eingesammelt, dann wird genau einmal
-    /// korrigiert — würde pro Box korrigiert, nullt die erste Box die Geschwindigkeit
-    /// und der Spieler bliebe in weiteren überlappenden Boxen stecken.
+    /// Carved blocks (Sculpt) collide at sub-voxel level.
+    /// ALL overlapping boxes are collected first and the correction is applied exactly once:
+    /// correcting per box would let the first one zero the velocity, leaving the player stuck
+    /// inside the remaining overlapping boxes.
     /// </summary>
     private void ResolveCollisions(VoxelWorld world, ref Vector3 pos, ref Vector3 vel, int axis)
     {
@@ -221,8 +221,8 @@ public class PlayerController
         int iz1 = (int)MathF.Floor(pos.Z + HalfWidth);
 
         bool hit = false;
-        float minBound = float.MaxValue; // kleinste Unterkante aller überlappenden Boxen (auf der Achse)
-        float maxBound = float.MinValue; // größte Oberkante
+        float minBound = float.MaxValue; // lowest edge of all overlapping boxes (on this axis)
+        float maxBound = float.MinValue; // highest edge
 
         for (int x = ix0; x <= ix1; x++)
         for (int y = iy0; y <= iy1; y++)
@@ -270,7 +270,7 @@ public class PlayerController
         }
     }
 
-    // Sammelt die Achsen-Grenzen einer soliden Box ein, falls sie den Spieler überlappt
+    // Collects the axis bounds of a solid box if it overlaps the player
     private void AccumulateBox(in Vector3 pos, float bMinX, float bMinY, float bMinZ, float size, int axis,
         ref bool hit, ref float minBound, ref float maxBound)
     {

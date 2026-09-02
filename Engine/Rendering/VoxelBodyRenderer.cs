@@ -6,9 +6,9 @@ using VoxelEngine.World;
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Zeichnet <see cref="VoxelBody"/>-Objekte und hält ihre GPU-Meshes. Ein Körper wird neu
-/// gemesht, sobald er als verändert markiert ist — pro Bild aber nur wenige, sonst reißt ein
-/// Treffer in mehrere Körper gleichzeitig die Bildrate ein.
+/// Draws <see cref="VoxelBody"/> objects and holds their GPU meshes. A body is remeshed as soon as
+/// it is marked dirty, but only a few per frame: a hit that touches several bodies at once would
+/// otherwise tear into the frame rate.
 /// </summary>
 public sealed class VoxelBodyRenderer : IDisposable
 {
@@ -25,13 +25,13 @@ public sealed class VoxelBodyRenderer : IDisposable
     private readonly Dictionary<VoxelBody, Entry> _entries = new();
     private int _rebuildsThisFrame;
 
-    /// <summary>Zu Beginn jedes Bildes aufrufen — setzt das Mesh-Budget zurück</summary>
+    /// <summary>Call at the start of every frame; resets the meshing budget</summary>
     public void BeginFrame() => _rebuildsThisFrame = 0;
 
     /// <summary>
-    /// Körper zeichnen. Das Licht wird pro Körper gesetzt, weil im Weltraum jede Kugel aus
-    /// einer anderen Richtung von der Sonne getroffen wird — und weil die Eigendrehung des
-    /// Körpers sonst die beleuchtete Seite mitdrehen würde.
+    /// Draw a body. The light is set per body, because out in space every sphere is hit by the sun
+    /// from a different direction, and because the body's own spin would otherwise drag the lit
+    /// side around with it.
     /// </summary>
     public void Draw(VoxelBody body, TerrainShader shader, Vector3 sunPosition, Vector3 sunColor, Vector3 ambient, Vector3 cameraPosition)
     {
@@ -48,7 +48,7 @@ public sealed class VoxelBodyRenderer : IDisposable
         Raylib.DrawMesh(entry.Mesh, shader.Material, TransformOf(body));
     }
 
-    /// <summary>Model-Matrix: Gittermitte in den Ursprung, skalieren, drehen, an die Weltposition</summary>
+    /// <summary>Model matrix: grid centre to the origin, scale, rotate, then out to the world position</summary>
     private static Matrix4x4 TransformOf(VoxelBody body)
     {
         const float half = VoxelBody.Size * 0.5f;
@@ -83,7 +83,7 @@ public sealed class VoxelBodyRenderer : IDisposable
     private static void Rebuild(VoxelBody body, Entry entry)
     {
         byte[] padded = ArrayPool<byte>.Shared.Rent(ChunkMesher.PaddedLength(VoxelBody.Size));
-        Array.Clear(padded, 0, ChunkMesher.PaddedLength(VoxelBody.Size)); // Schale ist Luft — der Körper endet an seinem Gitter
+        Array.Clear(padded, 0, ChunkMesher.PaddedLength(VoxelBody.Size)); // the shell is air: the body ends at its grid
 
         for (int y = 0; y < VoxelBody.Size; y++)
         for (int z = 0; z < VoxelBody.Size; z++)

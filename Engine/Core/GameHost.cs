@@ -5,7 +5,7 @@ using VoxelEngine.UI;
 
 namespace VoxelEngine.Core;
 
-/// <summary>Fenstergröße, Titel und Bildrate — alles, was vor dem ersten Frame feststehen muss</summary>
+/// <summary>Window size, title and frame rate: everything that must be fixed before the first frame</summary>
 public sealed record HostOptions
 {
     public string WindowTitle { get; init; } = "VoxelEngine";
@@ -13,14 +13,14 @@ public sealed record HostOptions
     public int Height { get; init; } = 720;
     public int TargetFps { get; init; } = 60;
 
-    /// <summary>&gt; 0: nach so vielen Bildern einen Screenshot ablegen und beenden (Rauchtest)</summary>
+    /// <summary>&gt; 0: drop a screenshot after that many frames and quit (smoke test)</summary>
     public int SmokeFrames { get; init; }
 }
 
 /// <summary>
-/// Besitzt Fenster, Hauptschleife, Menüs und das laufende Spiel. Spiele kennen einander nicht:
-/// gewechselt wird ausschließlich hier, und zwar zwischen zwei Bildern — das alte Spiel gibt
-/// erst alles frei, dann baut das neue auf.
+/// Owns the window, the main loop, the menus and the running game. Games know nothing about each
+/// other: switching happens only here, and only between two frames — the old game releases
+/// everything first, then the new one builds up.
 /// </summary>
 public sealed class GameHost : IDisposable
 {
@@ -41,7 +41,7 @@ public sealed class GameHost : IDisposable
     private bool _quitRequested;
     private bool _cursorFree;
 
-    /// <summary>Debug-Anzeige auf F3 — Spiele lesen das über den <see cref="GameContext"/></summary>
+    /// <summary>Debug overlay on F3; games read it through the <see cref="GameContext"/></summary>
     public bool DebugOverlay { get; private set; }
 
     public GameHost(GameRegistry registry, HostOptions? options = null)
@@ -62,17 +62,17 @@ public sealed class GameHost : IDisposable
 
         Raylib.InitWindow(_options.Width, _options.Height, _options.WindowTitle);
         Raylib.SetTargetFPS(_options.TargetFps);
-        Raylib.SetExitKey(KeyboardKey.Null); // ESC gehört dem Pausenmenü, nicht dem Fenster
+        Raylib.SetExitKey(KeyboardKey.Null); // ESC belongs to the pause menu, not to the window
         Raylib.InitAudioDevice();
 
-        if (smokeTest) Raylib.SetMousePosition(_options.Width / 2, _options.Height / 2); // sonst verdreht das erste Maus-Delta die Kamera
+        if (smokeTest) Raylib.SetMousePosition(_options.Width / 2, _options.Height / 2); // or the first mouse delta twists the camera
         else Raylib.DisableCursor();
 
         _settings = EngineSettings.Load();
         _pauseMenu = new PauseMenu(_registry);
         _tuningMenu = new TuningMenu(_settings);
         _cursorFree = smokeTest;
-        DebugOverlay = smokeTest; // im Rauchtest direkt an, damit die Stats auf dem Screenshot stehen
+        DebugOverlay = smokeTest; // on right away in the smoke test, so the stats end up on the screenshot
 
         SwitchTo(startGameId);
 
@@ -83,8 +83,8 @@ public sealed class GameHost : IDisposable
             float dt = Raylib.GetFrameTime();
             _statusTimer = MathF.Max(0f, _statusTimer - dt);
 
-            // War das Menü zu Bildbeginn offen, bekommt das Spiel diesen Frame keine Eingaben —
-            // sonst leakt das bestätigende Enter direkt ins Gameplay
+            // If the menu was open at the start of the frame, the game gets no input this frame:
+            // otherwise the confirming Enter leaks straight into the gameplay
             bool menuWasOpen = _pauseMenu.IsOpen;
             HandleMenu();
 
@@ -132,8 +132,8 @@ public sealed class GameHost : IDisposable
             }
         }
 
-        // Der Rauchtest darf die Tuning-Werte nicht anfassen: das Fenster reißt beim Start den
-        // Fokus an sich, versehentliche Tasten landen sonst dauerhaft in der Config
+        // The smoke test must not touch the tuning values: the window grabs focus on startup, so
+        // stray key presses would otherwise end up in the config for good
         if (!smokeTest) _settings.Save();
     }
 

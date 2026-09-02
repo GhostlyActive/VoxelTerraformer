@@ -1,14 +1,14 @@
 namespace VoxelEngine.MathTools;
 
 /// <summary>
-/// Deterministisches Value-Noise für Geländehöhen (2D) und Oberflächen von Voxel-Körpern (3D).
-/// Derselbe Seed liefert überall dasselbe Ergebnis — Chunks passen an ihren Grenzen zusammen.
+/// Deterministic value noise for terrain heights (2D) and the surfaces of voxel bodies (3D).
+/// The same seed gives the same result everywhere, so chunks line up at their borders.
 /// </summary>
 public static class Noise
 {
     private static float Frac(float v) => v - MathF.Floor(v);
 
-    // Deterministischer Hash -> 0..1
+    // Deterministic hash -> 0..1
     private static float Hash2(int x, int z, int seed)
     {
         unchecked
@@ -42,7 +42,7 @@ public static class Noise
     private static float Smooth(float t) => t * t * (3f - 2f * t);
     private static float Lerp(float a, float b, float t) => a + (b - a) * t;
 
-    /// <summary>Value Noise, bilinear interpoliert -> 0..1</summary>
+    /// <summary>Value noise, bilinearly interpolated -> 0..1</summary>
     public static float Value2D(float x, float z, int seed)
     {
         int x0 = (int)MathF.Floor(x);
@@ -61,7 +61,7 @@ public static class Noise
         return Lerp(Lerp(a, b, tx), Lerp(c, d, tx), tz);
     }
 
-    /// <summary>Value Noise, trilinear interpoliert -> 0..1</summary>
+    /// <summary>Value noise, trilinearly interpolated -> 0..1</summary>
     public static float Value3D(float x, float y, float z, int seed)
     {
         int x0 = (int)MathF.Floor(x);
@@ -80,7 +80,7 @@ public static class Noise
         return Lerp(Lerp(lowerFront, lowerBack, tz), Lerp(upperFront, upperBack, tz), ty);
     }
 
-    /// <summary>Mehrere Oktaven übereinander -> 0..1</summary>
+    /// <summary>Several octaves stacked -> 0..1</summary>
     public static float Fbm2D(float x, float z, int seed, int octaves, float persistence, float lacunarity)
     {
         float sum = 0f;
@@ -121,7 +121,7 @@ public static class Noise
         return Math.Clamp(sum / norm, 0f, 1f);
     }
 
-    /// <summary>Gefaltetes fBm: Peaks bei 1, Täler bei 0 — ergibt Bergketten statt Hügeln</summary>
+    /// <summary>Folded fBm: peaks at 1, valleys at 0, which gives ridges instead of hills</summary>
     public static float RidgeFbm2D(float x, float z, int seed, int octaves, float persistence, float lacunarity)
     {
         float sum = 0f;

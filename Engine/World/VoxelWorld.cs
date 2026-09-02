@@ -10,8 +10,8 @@ public class VoxelWorld
 {
     public const int WorldHeight = 64;
 
-    // Streaming: geladen wird im Kreis um den Spieler, entladen mit Hysterese
-    // (LoadRadius * Chunkgröße = 256 Blöcke — liegt hinter dem Fog-Ende, Nachladen bleibt unsichtbar)
+    // Streaming: chunks are loaded in a circle around the player and unloaded with hysteresis
+    // (LoadRadius * chunk size = 256 blocks, which is past the fog, so loading stays invisible)
     public const int LoadRadius = 8;
     public const int UnloadRadius = 10;
 
@@ -21,13 +21,13 @@ public class VoxelWorld
     private readonly WorldStorage _storage;
     private readonly ITerrainGenerator _generator;
 
-    // Veränderte Chunks überleben das Entladen im Speicher — auf Platte kommt nur, was
-    // der Spieler ausdrücklich speichert. Beim App-Start ist die Welt immer frisch.
+    // Changed chunks survive unloading in memory; only what the player explicitly saves goes to
+    // disk. On startup the world is always fresh.
     private readonly Dictionary<ChunkCoord, Chunk> _keptModified = new();
-    private bool _diskIsBase; // erst nach Save/Load ist der Spielstand die Basis fürs Chunk-Laden
+    private bool _diskIsBase; // only after a save or load is the file the basis for loading chunks
 
-    // Ziel im Fadenkreuz: entweder ein getroffener Block (Hover) oder — wenn innerhalb
-    // der Reichweite nichts im Weg ist — eine freie Zelle in der Luft (Ghost)
+    // What the crosshair points at: either a block that was hit (hover) or, with nothing in reach,
+    // an empty cell in mid-air (ghost)
     private bool _hasHover;
     private VoxelRaycast.Vector3Int _hoverBlock;
     private VoxelRaycast.Vector3Int _hoverPlaceCell;
@@ -37,51 +37,51 @@ public class VoxelWorld
     private VoxelRaycast.Vector3Int _ghostCell;
     private Vector3 _ghostCenter;
 
-    // Sculpt-Modus: Kugel-Brush auf dem Sub-Voxel-Dichtefeld, halten = durchgehender Strich
+    // Sculpt mode: a sphere brush on the sub-voxel density field; holding it draws a continuous stroke
     private bool _hasSculptTarget;
     private Vector3 _sculptTarget;
     private float _sculptRadiusForDraw;
 
-    // Zwischen zwei Frames wandert das Ziel; ohne Nachstempeln entlang der Strecke
-    // entstünde bei schneller Mausbewegung eine Perlenkette statt einer Röhre
+    // The target moves between frames; without stamping along that stretch, a fast mouse movement
+    // would leave a string of beads instead of a tube
     private bool _stroking;
     private Vector3 _strokePrevious;
     private bool _strokeAdding;
     private float _strokeParticleCooldown;
     private EngineSettings _settings = new();
 
-    // Beim Auftragen folgt der Pinsel dem Fadenkreuz nur mit begrenztem Tempo. Sonst schnellt
-    // die Fläche dem Blick entgegen, sobald der Raycast auf dem frisch gebauten Material landet.
+    // While adding material the brush follows the crosshair at a limited pace. Otherwise the
+    // surface races towards the view the moment the ray lands on freshly built material.
     private bool _hasBuildFront;
     private Vector3 _buildFront;
     private bool _rayHadHit;
 
-    // Pinselkugel und Blockrahmen stören beim Bauen — sie erscheinen nur kurz nach einer
-    // Größenänderung (Mausrad) und dauerhaft, solange die Debug-Anzeige läuft
+    // The brush sphere and the block outline get in the way while building, so they only appear
+    // briefly after a size change (wheel) and permanently while the debug overlay is on
     private float _previewTimer;
 
-    private const float StrokeStepFactor = 0.5f;    // Stempelabstand als Anteil des Radius
-    private const float StrokeMaxJump = 6f;         // darüber war es ein Zielsprung, keine Handbewegung
+    private const float StrokeStepFactor = 0.5f;    // stamp spacing as a fraction of the radius
+    private const float StrokeMaxJump = 6f;         // beyond this the target jumped, no hand moved
     private const int StrokeMaxStamps = 12;
-    private const float BuildMaxLag = 1.5f;         // Rückstand der Baufront, in Radien
+    private const float BuildMaxLag = 1.5f;         // how far the build front may lag, in radii
     private const float SculptParticleInterval = 0.07f;
 
-    /// <summary>Umschaltbar per Taste V — siehe <see cref="TerrainMode"/></summary>
+    /// <summary>Switched with key V; see <see cref="TerrainMode"/></summary>
     public TerrainMode Mode { get; set; } = TerrainMode.Blocks;
 
-    /// <summary>Beide Feinmodi benutzen denselben Kugel-Brush, nur die Darstellung unterscheidet sich</summary>
+    /// <summary>Both fine modes use the same sphere brush; only the presentation differs</summary>
     public bool UsesSculptTool => Mode != TerrainMode.Blocks;
 
-    /// <summary>Chunk braucht ein neues Mesh (feuert bei Kanten-Edits auch für Nachbarn)</summary>
+    /// <summary>Chunk needs a new mesh (also fires for neighbours when an edit touches an edge)</summary>
     public event Action<ChunkCoord>? ChunkDirty;
 
-    /// <summary>Block abgebaut: Zentrum + Albedo (z. B. für Partikel)</summary>
+    /// <summary>Block removed: centre plus albedo, for particles among others</summary>
     public event Action<Vector3, Color>? BlockBroken;
 
-    /// <summary>Block gesetzt: Zentrum + Albedo</summary>
+    /// <summary>Block placed: centre plus albedo</summary>
     public event Action<Vector3, Color>? BlockPlaced;
 
-    /// <summary>Chunk wurde entladen — Mesh kann weg</summary>
+    /// <summary>Chunk was unloaded, so its mesh can go</summary>
     public event Action<ChunkCoord>? ChunkUnloaded;
 
     public IEnumerable<Chunk> Chunks => _chunks.Values;
@@ -99,7 +99,7 @@ public class VoxelWorld
 
     // --- Streaming ---
 
-    /// <summary>Lädt sofort alles im Radius (Blocking) — für den Spielstart um den Spawn</summary>
+    /// <summary>Loads everything within the radius right away (blocking), for the spawn area at startup</summary>
     public void EnsureAround(Vector3 position, int radiusChunks)
     {
         (int pcx, int pcz) = PositionToChunk(position);
@@ -112,7 +112,7 @@ public class VoxelWorld
         }
     }
 
-    /// <summary>Pro Frame aufrufen: lädt die nächsten fehlenden Chunks (Budget) und entlädt ferne</summary>
+    /// <summary>Call once per frame: loads the next missing chunks within budget and drops distant ones</summary>
     public void UpdateStreaming(Vector3 playerPosition, int loadBudget)
     {
         (int pcx, int pcz) = PositionToChunk(playerPosition);
@@ -142,10 +142,10 @@ public class VoxelWorld
         }
     }
 
-    /// <summary>Manuelles Speichern: der komplette aktuelle Weltzustand wird zum Spielstand</summary>
+    /// <summary>Manual save: the entire current state of the world becomes the save</summary>
     public bool SaveWorld()
     {
-        // Frische Session: der alte Spielstand wird ersetzt, nicht vermischt
+        // Fresh session: the old save is replaced, not mixed into
         if (!_diskIsBase) _storage.DeleteAll();
 
         bool allWritten = true;
@@ -159,7 +159,7 @@ public class VoxelWorld
         foreach ((ChunkCoord coord, Chunk chunk) in _keptModified)
             allWritten &= _storage.Save(coord, chunk.RawBlocks, chunk.Refinements);
 
-        // Bei Fehlschlag Zustand unangetastet lassen — der nächste Versuch speichert wieder alles
+        // On failure leave the state untouched; the next attempt writes everything again
         if (!allWritten) return false;
 
         foreach ((ChunkCoord _, Chunk chunk) in _chunks)
@@ -170,16 +170,16 @@ public class VoxelWorld
         return true;
     }
 
-    /// <summary>Manuelles Laden: verwirft den aktuellen Zustand und stellt den Spielstand her</summary>
+    /// <summary>Manual load: discards the current state and restores the save</summary>
     public bool LoadWorld()
     {
-        // Alte/fremde Formatversionen ablehnen — sonst würde still eine frische Welt geladen
+        // Reject old or foreign format versions, or a fresh world would quietly be loaded instead
         if (!_storage.HasCompatibleSave) return false;
 
         _keptModified.Clear();
         _diskIsBase = true;
 
-        // Alles Geladene verwerfen — danach kommt es frisch von Platte bzw. aus dem Generator
+        // Drop everything loaded; afterwards it comes fresh from disk or from the generator
         foreach (ChunkCoord coord in _chunks.Keys.ToList())
         {
             _chunks.Remove(coord);
@@ -207,8 +207,8 @@ public class VoxelWorld
 
         _chunks.Add(coord, chunk);
 
-        // Selbst + alle 8 Nachbarn neu meshen: Grenzflächen zu vorher "leerem" Nachbarraum
-        // verschwinden, und AO an den Rändern stimmt erst mit Nachbardaten
+        // Remesh this chunk and all 8 neighbours: faces towards previously "empty" neighbouring
+        // space disappear, and ambient occlusion at the borders is only right with neighbour data
         for (int dz = -1; dz <= 1; dz++)
         for (int dx = -1; dx <= 1; dx++)
             ChunkDirty?.Invoke(new ChunkCoord(coord.X + dx, coord.Z + dz));
@@ -257,22 +257,22 @@ public class VoxelWorld
         bool remove = Raylib.IsMouseButtonPressed(MouseButton.Left) || Raylib.IsKeyPressed(KeyboardKey.O);
         bool place  = Raylib.IsMouseButtonPressed(MouseButton.Right) || Raylib.IsKeyPressed(KeyboardKey.P);
 
-        // Hover/Ghost jeden Frame aktualisieren — Abbauen/Bauen wirken exakt auf das markierte Ziel
+        // Refresh hover and ghost every frame, so removing and placing act exactly on the marked target
         UpdateHover(camera, settings.BuildReach);
 
         if (remove) TryRemove();
         if (place)  TryPlace(playerBounds);
     }
 
-    /// <summary>Dauerhafte Vorschau (Blockrahmen bzw. Pinselkugel) — hängt an der Debug-Anzeige (F3)</summary>
+    /// <summary>Permanent preview (block outline or brush sphere); tied to the debug overlay (F3)</summary>
     public bool ShowPreviewAlways { get; set; }
 
-    /// <summary>Vorschau kurz einblenden, z. B. nachdem sich Reichweite oder Brushgröße geändert haben</summary>
+    /// <summary>Flash the preview briefly, for instance after the reach or brush size changed</summary>
     public void PulsePreview() => _previewTimer = Math.Max(_previewTimer, _settings.PreviewHold);
 
     public void DrawHover()
     {
-        // Am Ende ausblenden statt hart abschalten — ein Sprung fällt mehr auf als die Vorschau selbst
+        // Fade out at the end instead of cutting: a jump is more noticeable than the preview itself
         const float fadeSeconds = 0.35f;
         float visibility = ShowPreviewAlways ? 1f : Math.Clamp(_previewTimer / fadeSeconds, 0f, 1f);
         if (visibility <= 0f) return;
@@ -295,8 +295,8 @@ public class VoxelWorld
         => new(color.R, color.G, color.B, (byte)(color.A * Math.Clamp(factor, 0f, 1f)));
 
     /// <summary>
-    /// Pinselvorschau: durchscheinende Kugel plus Drahtgitter, grün beim Auftragen,
-    /// rot beim Abtragen. Der Puls macht sichtbar, dass der Strich gerade läuft.
+    /// Brush preview: a translucent sphere plus wireframe, green while adding and red while
+    /// carving. The pulse makes it visible that a stroke is running.
     /// </summary>
     private void DrawBrushPreview(float visibility)
     {
@@ -330,7 +330,7 @@ public class VoxelWorld
             camera
         );
 
-        // Raycast auf Sub-Voxel-Auflösung (Koordinaten x8) — trifft auch durch gebohrte Löcher korrekt
+        // Raycast at sub-voxel resolution (coordinates x8), so it also reads drilled holes correctly
         var hit = VoxelRaycast.Cast(
             GetSubVoxel,
             ray.Position * SubVoxels.Divisions,
@@ -346,12 +346,12 @@ public class VoxelWorld
         }
         else
         {
-            // nichts getroffen → frei in der Luft am Ende der Reichweite formen
+            // nothing hit: shape mid-air at the end of the reach
             _sculptTarget = ray.Position + Vector3.Normalize(ray.Direction) * buildReach;
         }
         _hasSculptTarget = true;
 
-        // Trefferlage jeden Frame fortschreiben, auch ohne gedrückte Taste
+        // Track whether the ray hits every frame, button held or not
         bool rayJumped = hit.HasHit != _rayHadHit;
         _rayHadHit = hit.HasHit;
 
@@ -365,28 +365,28 @@ public class VoxelWorld
             return;
         }
 
-        bool add = !carve && build; // bei beiden Tasten gewinnt das Bohren
+        bool add = !carve && build; // with both buttons down, carving wins
         if (_stroking && add != _strokeAdding) _stroking = false;
 
         float frameTime = Raylib.GetFrameTime();
         _strokeAdding = add;
         _strokeParticleCooldown -= frameTime;
 
-        // Der kantige Sculpt-Modus schaltet Zellen hart (sonst zerfranst das Würfelbild),
-        // Smooth trägt eine weiche Flanke auf — daraus zieht Marching Cubes die runde Fläche
+        // Hard-edged Sculpt mode switches cells outright, or the cube look frays; Smooth lays down
+        // a soft falloff, which is what marching cubes turns into a rounded surface
         float edge = Mode == TerrainMode.Smooth ? sculptRadius * _settings.BrushSoftness : 0f;
 
-        // Wechselt der Strahl zwischen Treffer und Leere, springt das Ziel um Meter, ohne dass
-        // die Hand etwas getan hat — dort neu ansetzen, sonst zieht die Front eine Röhre quer
-        // durch die Luft hinterher. Reine Handbewegung lässt sie dagegen zurückfallen.
+        // When the ray flips between hit and empty, the target jumps metres without the hand doing
+        // anything: start over there, otherwise the front drags a tube through mid-air behind it.
+        // Hand movement alone, by contrast, just lets it fall behind.
         if (add && rayJumped)
         {
             _hasBuildFront = false;
             _stroking = false;
         }
 
-        // Abtragen wirkt sofort am Ziel — beim Graben stört jede Verzögerung. Auftragen
-        // kriecht dorthin, damit die Fläche stetig wächst statt in ganzen Kugeln zu springen.
+        // Carving acts on the target immediately, since any lag gets in the way while digging.
+        // Adding creeps towards it so the surface grows steadily instead of jumping by whole spheres.
         Vector3 point = add ? AdvanceBuildFront(_sculptTarget, sculptRadius, frameTime) : _sculptTarget;
         if (!add) _hasBuildFront = false;
 
@@ -408,10 +408,10 @@ public class VoxelWorld
     }
 
     /// <summary>
-    /// Die Baufront zieht mit dem eingestellten Tempo hinter dem Fadenkreuz her. Wer die Maus
-    /// schneller bewegt, läuft ihr davon — dann bleibt sie sichtbar zurück, statt zum Ziel zu
-    /// springen und die übersprungene Strecke in einem Frame zuzuschütten. Weiter als
-    /// <see cref="BuildMaxLag"/> Radien fällt sie nicht zurück, sonst baut man blind hinterher.
+    /// The build front trails the crosshair at the configured pace. Move the mouse faster and you
+    /// outrun it: it then visibly stays behind instead of snapping to the target and filling in the
+    /// skipped stretch within one frame. It never falls back further than
+    /// <see cref="BuildMaxLag"/> radii, or you would be building blind.
     /// </summary>
     private Vector3 AdvanceBuildFront(Vector3 target, float radius, float frameTime)
     {
@@ -435,9 +435,9 @@ public class VoxelWorld
     }
 
     /// <summary>
-    /// Stempelt den Brush entlang der Strecke seit dem letzten Frame. Ein einzelner Stempel
-    /// pro Frame würde bei schneller Mausbewegung eine Perlenkette hinterlassen; überlappende
-    /// Kugeln ergeben dagegen eine durchgehende Röhre.
+    /// Stamps the brush along the stretch covered since the last frame. A single stamp per frame
+    /// would leave a string of beads when the mouse moves fast; overlapping spheres give a
+    /// continuous tube instead.
     /// </summary>
     private bool StampStroke(Vector3 target, float radius, bool add, float edge, BoundingBox playerBounds)
     {
@@ -447,8 +447,8 @@ public class VoxelWorld
         Vector3 delta = target - _strokePrevious;
         float distance = delta.Length();
 
-        // Große Sprünge kommen vom Raycast (Ziel wechselt zwischen Treffer und Reichweitenende),
-        // nicht von einer Handbewegung — die dürfen keine Spur ziehen
+        // Large jumps come from the raycast (the target flipping between a hit and the end of the
+        // reach), not from a hand movement, and must not draw a trail
         float step = radius * StrokeStepFactor;
         if (distance < step || distance > radius * StrokeMaxJump) return changed;
 
@@ -463,15 +463,15 @@ public class VoxelWorld
     }
 
     /// <summary>
-    /// Weicher Kugel-Brush auf dem Sub-Voxel-Dichtefeld: im Kern 255, am Radius genau der
-    /// Iso-Wert, nach außen über <paramref name="edge"/> Meter auf 0 auslaufend.
-    /// Auftragen vereinigt (Maximum), Abtragen subtrahiert (Minimum) — dadurch wachsen
-    /// mehrere Striche zu einer runden Form zusammen, statt einander zu überschreiben,
-    /// und ein Stempel auf dieselbe Stelle ändert nichts mehr.
+    /// A soft sphere brush on the sub-voxel density field: 255 at the core, exactly the iso value
+    /// at the radius, running out to 0 over <paramref name="edge"/> metres.
+    /// Adding takes the union (maximum), carving subtracts (minimum), so several strokes grow
+    /// together into one rounded shape instead of overwriting each other, and stamping the same
+    /// spot twice changes nothing.
     /// </summary>
     public bool SculptBlob(Vector3 center, float radius, bool add, float edge, byte blockId, BoundingBox playerBounds)
     {
-        // Über 2*radius Flanke erreicht der Kern nie volle Dichte — der Brush träfe ins Leere
+        // With a falloff over 2*radius the core never reaches full density and the brush hits nothing
         edge = Math.Clamp(edge, 0f, radius * 1.6f);
         float reach = radius + edge;
 
@@ -488,16 +488,16 @@ public class VoxelWorld
         for (int bz = minBlockZ; bz <= maxBlockZ; bz++)
         for (int bx = minBlockX; bx <= maxBlockX; bx++)
         {
-            if (BlockDistanceSquared(bx, by, bz, center) > reach * reach) continue; // Ecke der Box, außerhalb der Kugel
+            if (BlockDistanceSquared(bx, by, bz, center) > reach * reach) continue; // box corner, outside the sphere
 
             var (cc, lx, lz) = WorldToChunk(bx, bz);
             if (!_chunks.TryGetValue(cc, out var chunk)) continue;
 
             int id = chunk.GetLocal(lx, by, lz, WorldHeight);
             bool solid = BlockRegistry.IsSolid(id);
-            if (!add && !solid) continue; // Luft lässt sich nicht weiter aushöhlen
+            if (!add && !solid) continue; // air cannot be hollowed out any further
 
-            // Copy-on-Write: gespeicherte Felder nie in-place ändern (Worker-Threads lesen sie)
+            // Copy-on-write: never change stored fields in place, worker threads read them
             bool refined = chunk.TryGetRefinement(lx, by, lz, WorldHeight, out byte[] existing);
             byte[] working = solid
                 ? (refined ? (byte[])existing.Clone() : SubVoxels.NewFull())
@@ -506,8 +506,8 @@ public class VoxelWorld
             bool changed = false;
             bool crossesIso = false;
 
-            // Nur die Zellen ablaufen, die der Pinsel überhaupt erreichen kann — bei großem
-            // Radius liegen sonst die meisten der 512 Zellen je Block nutzlos in der Schleife
+            // Walk only the cells the brush can actually reach: with a large radius most of the
+            // 512 cells per block would otherwise sit in the loop for nothing
             (int minCellX, int maxCellX) = CellRange(center.X, reach, bx);
             (int minCellY, int maxCellY) = CellRange(center.Y, reach, by);
             (int minCellZ, int maxCellZ) = CellRange(center.Z, reach, bz);
@@ -522,7 +522,7 @@ public class VoxelWorld
                     bz + (sz + 0.5f) * SubVoxels.CellSize);
 
                 float distanceSquared = Vector3.DistanceSquared(cellCenter, center);
-                if (distanceSquared > reach * reach) continue; // spart die Wurzel für die Ecken
+                if (distanceSquared > reach * reach) continue; // saves the square root for the corners
 
                 float profile = Profile(MathF.Sqrt(distanceSquared), radius, edge);
                 if (profile <= 0f) continue;
@@ -534,7 +534,7 @@ public class VoxelWorld
 
                 byte next = SubVoxels.Quantize(wanted);
                 if (next == previous) continue;
-                if (next > previous && SubIntersectsBox(playerBounds, bx, by, bz, sx, sy, sz)) continue; // nicht in den Spieler bauen
+                if (next > previous && SubIntersectsBox(playerBounds, bx, by, bz, sx, sy, sz)) continue; // do not build into the player
 
                 SubVoxels.Set(working, sx, sy, sz, next);
                 changed = true;
@@ -543,28 +543,28 @@ public class VoxelWorld
 
             if (!changed) continue;
 
-            // Nur Flankensaum in einem noch unberührten Block: die Form selbst reicht nicht bis
-            // hierher. Die Dichte trotzdem einzutragen verschiebt bloß den Box-Filter der
-            // Nachbarschaft — und weil eine ebene Blockoberfläche exakt auf der Iso-Kante liegt,
-            // kippen daraus hauchdünne Häute bzw. Kerben neben der Form heraus.
+            // Only falloff fringe in a block that is still untouched: the shape itself does not
+            // reach this far. Writing the density anyway merely shifts the neighbourhood's box
+            // filter, and because a flat block surface sits exactly on the iso edge, that tips out
+            // paper-thin skins or notches beside the shape.
             if (!crossesIso && !refined) continue;
 
             anyChange = true;
 
             if (!solid)
             {
-                // Luft bekommt Substanz → Block anlegen (SetLocal räumt alte Details mit weg)
+                // Air gains substance, so create a block (SetLocal clears any old detail with it)
                 chunk.SetLocal(lx, by, lz, blockId, WorldHeight);
                 if (!SubVoxels.IsFull(working))
                     chunk.SetRefinement(lx, by, lz, working, WorldHeight);
             }
             else if (SubVoxels.IsEmpty(working))
             {
-                chunk.SetLocal(lx, by, lz, BlockRegistry.Air, WorldHeight); // komplett weggeschnitzt
+                chunk.SetLocal(lx, by, lz, BlockRegistry.Air, WorldHeight); // carved away completely
             }
             else
             {
-                chunk.SetRefinement(lx, by, lz, working, WorldHeight); // volles Feld entfernt den Eintrag selbst
+                chunk.SetRefinement(lx, by, lz, working, WorldHeight); // a full field removes the entry itself
             }
 
             FireDirtyAround(cc, lx, lz);
@@ -573,7 +573,7 @@ public class VoxelWorld
         return anyChange;
     }
 
-    /// <summary>Füllgrad 0..1 der Pinselkugel: im Kern 1, bei distance == radius genau 0,5 (= Iso), außen 0</summary>
+    /// <summary>Fill 0..1 of the brush sphere: 1 at the core, exactly 0.5 (= iso) at distance == radius, 0 outside</summary>
     private static float Profile(float distance, float radius, float edge)
     {
         if (edge <= 0f) return distance <= radius ? 1f : 0f;
@@ -582,10 +582,10 @@ public class VoxelWorld
         if (t <= 0f) return 0f;
         if (t >= 1f) return 1f;
 
-        return t * t * (3f - 2f * t); // Smoothstep: Flanke ohne Knick, sonst zeichnet sich der Pinselrand ab
+        return t * t * (3f - 2f * t); // smoothstep: a falloff without a kink, or the brush edge shows
     }
 
-    /// <summary>Zellen eines Blocks, die auf einer Achse in Reichweite des Pinselzentrums liegen</summary>
+    /// <summary>The cells of a block that lie within reach of the brush centre on one axis</summary>
     private static (int Min, int Max) CellRange(float center, float reach, int block)
     {
         int min = (int)MathF.Floor((center - reach - block) * SubVoxels.Divisions);
@@ -635,7 +635,7 @@ public class VoxelWorld
             return;
         }
 
-        // Nichts im Weg → Bau-Ziel frei in der Luft am Ende der Reichweite
+        // Nothing in the way: the build target sits in mid-air at the end of the reach
         Vector3 target = ray.Position + Vector3.Normalize(ray.Direction) * buildReach;
         int gx = (int)MathF.Floor(target.X);
         int gy = (int)MathF.Floor(target.Y);
@@ -663,14 +663,14 @@ public class VoxelWorld
 
     private void TryPlace(BoundingBox playerBounds)
     {
-        // Blick auf einen Block → an dessen Fläche bauen; sonst frei in die Luft auf Reichweite
+        // Looking at a block: build against its face; otherwise into mid-air at full reach
         VoxelRaycast.Vector3Int cell;
         if (_hasHover) cell = _hoverPlaceCell;
         else if (_hasGhost) cell = _ghostCell;
         else return;
 
         if (GetBlock(cell.X, cell.Y, cell.Z) != 0) return; // must be air
-        if (IntersectsBlock(playerBounds, cell.X, cell.Y, cell.Z)) return; // nicht in den Spieler hinein bauen
+        if (IntersectsBlock(playerBounds, cell.X, cell.Y, cell.Z)) return; // do not build into the player
 
         SetBlock(cell.X, cell.Y, cell.Z, BlockRegistry.Stone);
 
@@ -707,10 +707,10 @@ public class VoxelWorld
         return chunk.TryGetRefinement(lx, wy, lz, WorldHeight, out field);
     }
 
-    /// <summary>Blocktyp der Sub-Zelle (Welt-Sub-Koordinaten, 8 pro Block), 0 = Luft</summary>
+    /// <summary>Block type of a sub-cell (world sub-coordinates, 8 per block); 0 = air</summary>
     public int GetSubVoxel(int swx, int swy, int swz)
     {
-        // Shift/LowMask entsprechen FloorDiv/Modulo für die Zweierpotenz (auch für negative Werte)
+        // Shift and LowMask are FloorDiv and modulo for the power of two, negatives included
         int wx = swx >> SubVoxels.Shift;
         int wy = swy >> SubVoxels.Shift;
         int wz = swz >> SubVoxels.Shift;
@@ -720,7 +720,7 @@ public class VoxelWorld
         int id = GetBlock(wx, wy, wz);
         if (!BlockRegistry.IsSolid(id)) return 0;
 
-        if (!TryGetRefinement(wx, wy, wz, out byte[] field)) return id; // Vollblock
+        if (!TryGetRefinement(wx, wy, wz, out byte[] field)) return id; // full block
         return SubVoxels.IsSolid(field, swx & SubVoxels.LowMask, swy & SubVoxels.LowMask, swz & SubVoxels.LowMask) ? id : 0;
     }
 
@@ -729,14 +729,14 @@ public class VoxelWorld
         if (wy < 0 || wy >= WorldHeight) return;
 
         var (cc, lx, lz) = WorldToChunk(wx, wz);
-        if (!_chunks.TryGetValue(cc, out var chunk)) return; // außerhalb der geladenen Welt
+        if (!_chunks.TryGetValue(cc, out var chunk)) return; // outside the loaded world
 
         chunk.SetLocal(lx, wy, lz, id, WorldHeight);
 
         FireDirtyAround(cc, lx, lz);
     }
 
-    // Edits an Kanten/Ecken betreffen auch die Meshes der (diagonalen) Nachbarn — wegen Face-Culling und AO
+    // Edits on edges and corners also affect the meshes of the (diagonal) neighbours, for face culling and AO
     private void FireDirtyAround(ChunkCoord cc, int lx, int lz)
     {
         ChunkDirty?.Invoke(cc);

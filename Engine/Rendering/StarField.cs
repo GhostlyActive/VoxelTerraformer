@@ -4,10 +4,10 @@ using System.Numerics;
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Sternenhimmel: feste Richtungen, gezeichnet relativ zur Kamera, damit sie wie unendlich
-/// weit weg wirken. Blendet mit der Nacht ein und funkelt leicht. Über dem Gelände genügt die
-/// obere Halbkugel; im Weltraum braucht es die volle Kugel und einen Abstand jenseits aller
-/// Himmelskörper — beides stellt der Konstruktor ein.
+/// A starfield: fixed directions drawn relative to the camera, which makes them read as
+/// infinitely far away. Fades in with the night and twinkles a little. Above terrain the upper
+/// hemisphere is enough; in space it takes the full sphere and a distance beyond every celestial
+/// body, both of which the constructor sets.
 /// </summary>
 public sealed class StarField
 {
@@ -24,8 +24,8 @@ public sealed class StarField
         _starCount = starCount;
         _distance = distance;
 
-        // Die Würfel stehen in fester Entfernung — wächst die, müssen sie mitwachsen,
-        // sonst schrumpfen die Sterne auf Subpixelgröße und flackern
+        // The cubes sit at a fixed distance, so when that grows they have to grow with it, or the
+        // stars shrink to subpixel size and flicker
         _sizeScale = distance / 380f;
 
         _directions = new Vector3[starCount];
@@ -36,8 +36,8 @@ public sealed class StarField
 
         for (int i = 0; i < starCount; i++)
         {
-            // Gleichverteilter Azimut; über Gelände ist die Elevation Richtung Horizont
-            // verdichtet, weil man dort meist flach über die Landschaft schaut
+            // Evenly distributed azimuth; above terrain the elevation is packed towards the
+            // horizon, because that is where you mostly look
             float azimuth = (float)(random.NextDouble() * MathF.Tau);
             float elevation = fullSphere
                 ? MathF.Asin((float)(random.NextDouble() * 2.0 - 1.0))

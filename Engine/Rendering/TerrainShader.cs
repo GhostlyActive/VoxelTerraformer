@@ -4,8 +4,8 @@ using System.Numerics;
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Shader für die Chunk-Meshes: Vertex-Farben (Albedo + gebackenes AO) plus
-/// dynamisches Sonnenlicht aus dem DayNightCycle. GLSL 330 läuft auf Windows, Linux und macOS.
+/// Shader for the chunk meshes: vertex colours (albedo plus baked ambient occlusion) and dynamic
+/// sunlight. GLSL 330 runs on Windows, Linux and macOS.
 /// </summary>
 public sealed class TerrainShader
 {
@@ -30,11 +30,11 @@ void main()
 in vec3 fragNormal;
 in vec4 fragColor;
 in vec3 fragPosition;
-uniform vec3 sunDirection;   // normiert, zeigt von der Sonne in die Welt
+uniform vec3 sunDirection;   // normalized, points from the sun into the world
 uniform vec3 sunColor;
 uniform vec3 ambientColor;
 uniform vec3 cameraPosition;
-uniform vec3 fogColor;       // Himmelsfarbe, damit die Welt in den Horizont übergeht
+uniform vec3 fogColor;       // sky colour, so the world blends into the horizon
 uniform float fogStart;
 uniform float fogEnd;
 out vec4 finalColor;
@@ -43,7 +43,7 @@ void main()
     float diffuse = max(dot(normalize(fragNormal), -sunDirection), 0.0);
     vec3 lit = fragColor.rgb * (ambientColor + sunColor * diffuse);
 
-    // Alpha der Vertex-Farbe transportiert Emissive (0 = normal beleuchtet, 1 = selbstleuchtend)
+    // The vertex colour's alpha carries emissive (0 = lit normally, 1 = self-lit)
     vec3 color = mix(lit, fragColor.rgb, fragColor.a);
 
     float fog = smoothstep(fogStart, fogEnd, length(fragPosition - cameraPosition));
@@ -82,7 +82,7 @@ void main()
         _material.Shader = _shader;
     }
 
-    /// <summary>Beleuchtung des kommenden Draws setzen. sunDirection zeigt von der Lichtquelle in die Welt.</summary>
+    /// <summary>Set the lighting for the next draw. sunDirection points from the light into the world.</summary>
     public void SetLighting(Vector3 sunDirection, Vector3 sunColor, Vector3 ambientColor, Color fogColor, Vector3 cameraPosition)
     {
         var fog = new Vector3(fogColor.R, fogColor.G, fogColor.B) / 255f;
@@ -96,13 +96,13 @@ void main()
         Raylib.SetShaderValue(_shader, _locFogEnd, FogEnd, ShaderUniformDataType.Float);
     }
 
-    /// <summary>Beleuchtung aus dem Tageslauf übernehmen — Fog nimmt die Himmelsfarbe, damit die Welt in den Horizont übergeht</summary>
+    /// <summary>Take the lighting from the day cycle; fog uses the sky colour so the world blends into the horizon</summary>
     public void SetFrame(DayNightCycle dayNight, Vector3 cameraPosition)
         => SetLighting(dayNight.SunDirection, dayNight.SunlightColor, dayNight.AmbientColor, dayNight.SkyColor, cameraPosition);
 
     public void Unload()
     {
-        // UnloadMaterial gibt den zugewiesenen Shader mit frei
+        // UnloadMaterial releases the assigned shader along with it
         Raylib.UnloadMaterial(_material);
     }
 }

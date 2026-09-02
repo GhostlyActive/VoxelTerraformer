@@ -8,35 +8,41 @@ using VoxelEngine.World;
 
 namespace VoxelEngine.Scenes;
 
-/// <summary>Aufbau einer <see cref="VoxelTerrainScene"/> — alles, was vor dem ersten Chunk feststehen muss</summary>
+/// <summary>Everything a <see cref="VoxelTerrainScene"/> needs to know before the first chunk exists</summary>
 public sealed record VoxelTerrainOptions
 {
-    /// <summary>Unterordner des Spielstands im Benutzerprofil; ein Slot je Spiel</summary>
+    /// <summary>Save folder inside the user profile; one slot per game</summary>
     public string SaveSlot { get; init; } = "world";
 
     public Vector3 Spawn { get; init; } = new(128, 60, 128);
 
-    /// <summary>Eigenes Gelände; null nimmt <see cref="DefaultTerrainGenerator"/></summary>
+    /// <summary>Custom terrain; null falls back to <see cref="DefaultTerrainGenerator"/></summary>
     public ITerrainGenerator? Generator { get; init; }
 
     public TerrainMode Mode { get; init; } = TerrainMode.Blocks;
 
-    /// <summary>Darf der Spieler mit Maustasten Material abtragen und auftragen?</summary>
+    /// <summary>May the player carve and add material with the mouse buttons?</summary>
     public bool AllowEditing { get; init; } = true;
+
+    /// <summary>Let the sun travel, or pin it at <see cref="SunAngleDegrees"/></summary>
+    public bool RunDayNight { get; init; } = true;
+
+    /// <summary>Sun position on its arc: 0 = sunrise, 90 = noon, 180 = sunset</summary>
+    public float SunAngleDegrees { get; init; } = 90f;
 
     public bool Clouds { get; init; } = true;
     public bool Stars { get; init; } = true;
     public bool SunAndMoon { get; init; } = true;
 
-    /// <summary>Chunk-Radius, der beim Start blockierend geladen wird — darunter fällt der Spieler ins Leere</summary>
+    /// <summary>Chunk radius loaded up front; without it the player drops through empty space</summary>
     public int PreloadRadius { get; init; } = 3;
 }
 
 /// <summary>
-/// Eine fertig verdrahtete Voxelwelt: Streaming, Meshing im Hintergrund, Terrain-Shader,
-/// Tageslauf, Himmel, Partikel und ein Spieler mit Sub-Voxel-Kollision. Ein Spiel setzt
-/// Spawn, Gelände und Modus und ruft pro Bild <see cref="Update"/>, <see cref="DrawBackground"/>
-/// und <see cref="Draw"/> — der Rest hängt schon zusammen.
+/// A voxel world with everything already wired up: streaming, background meshing, the terrain
+/// shader, day cycle, sky, particles and a player with sub-voxel collision. A game sets spawn,
+/// terrain and mode, then calls <see cref="Update"/>, <see cref="DrawBackground"/> and
+/// <see cref="Draw"/> once per frame.
 /// </summary>
 public sealed class VoxelTerrainScene : IDisposable
 {
@@ -45,14 +51,13 @@ public sealed class VoxelTerrainScene : IDisposable
     private readonly StarField? _stars;
     private readonly CloudLayer? _clouds;
 
-    // Menü (Taste M) und Tasten (Z/U) greifen beide auf den Tageslauf zu — der Abgleich pro Bild
-    // erkennt an diesen Spiegelwerten, welche Seite sich zuletzt geändert hat
-    private float _menuTimeOfDay;
+    // The tuning menu (M) and the in-game keys (Z/U) both reach for the sun. Comparing against
+    // these mirrors each frame tells us which side moved last.
+    private float _menuSunAngle;
     private float _menuTimeFlow;
 
     private TerrainMode _mode;
     private float _shake;
-    private Vector3 _shakeOffset;
 
     public VoxelWorld World { get; }
     public ChunkMeshManager Meshes { get; }
@@ -63,16 +68,22 @@ public sealed class VoxelTerrainScene : IDisposable
 
     public Camera3D Camera { get; private set; }
 
-    /// <summary>Sekunden seit dem Start der Szene — treibt Sterne und Wolken</summary>
+    /// <summary>Seconds since the scene started; drives stars and drifting clouds</summary>
     public float ElapsedTime { get; private set; }
 
-    /// <summary>Terraforming per Maustaste erlauben</summary>
+    /// <summary>Allow terraforming with the mouse buttons</summary>
     public bool AllowEditing { get; set; }
 
-    /// <summary>Chunk-Grenzen und Weltgitter einblenden (F3)</summary>
+    /// <summary>
+    /// Is the player in control? Turning this off freezes movement and mouse look while the
+    /// world, its particles and the light keep running — for a death screen, for instance.
+    /// </summary>
+    public bool AllowPlayerControl { get; set; } = true;
+
+    /// <summary>Show chunk bounds and the world grid (F3)</summary>
     public bool ShowDebugGeometry { get; set; }
 
-    /// <summary>Die drei Voxel-Stufen; Umschalten meshed die Welt neu, ändert aber keine Daten</summary>
+    /// <summary>The three voxel modes; switching remeshes the world but never touches its data</summary>
     public TerrainMode Mode
     {
         get => _mode;
@@ -92,7 +103,7 @@ public sealed class VoxelTerrainScene : IDisposable
         World = new VoxelWorld(Storage, options.Generator);
         Player = new PlayerController(options.Spawn, settings);
 
-        // Startbereich sofort laden, damit der Spieler auf festem Boden landet
+        // Load the spawn area up front so the player lands on solid ground
         World.EnsureAround(options.Spawn, options.PreloadRadius);
 
         DayNight = new DayNightCycle
@@ -101,11 +112,13 @@ public sealed class VoxelTerrainScene : IDisposable
             DayLengthSeconds = settings.DayLengthSeconds,
             OrbitRadius = 300f,
             DrawSunAndMoon = options.SunAndMoon,
-            TimeOfDayHours = settings.TimeOfDay,
+            AutoAdvance = options.RunDayNight,
+            SunAngleDegrees = options.SunAngleDegrees,
             TimeScale = settings.TimeFlow,
         };
 
-        _menuTimeOfDay = settings.TimeOfDay;
+        // The game decides where its sun starts; the menu takes over from the first change on
+        _menuSunAngle = settings.SunAngle;
         _menuTimeFlow = settings.TimeFlow;
 
         _shader = new TerrainShader();
@@ -125,31 +138,31 @@ public sealed class VoxelTerrainScene : IDisposable
         Camera = Player.CameraOnly();
     }
 
-    /// <summary>Nächste Voxel-Stufe (Blocks → Sculpt → Smooth → Blocks)</summary>
+    /// <summary>Next voxel mode (Blocks → Sculpt → Smooth → Blocks)</summary>
     public void CycleMode() => Mode = (TerrainMode)(((int)Mode + 1) % 3);
 
-    /// <summary>Kamera für kurze Zeit zittern lassen, etwa nach einem Einschlag in der Nähe</summary>
+    /// <summary>Shake the camera briefly, for instance after a nearby impact</summary>
     public void Shake(float strength) => _shake = MathF.Max(_shake, strength);
 
     public void Update(float dt)
     {
         ElapsedTime += dt;
 
-        Camera = Player.Update(World, dt);
+        if (AllowPlayerControl) Camera = Player.Update(World, dt);
 
-        // Welt um den Spieler streamen (Budget: max. 2 neue Chunks pro Bild)
+        // Stream the world around the player (budget: at most 2 new chunks per frame)
         World.UpdateStreaming(Player.Position, 2);
 
         UpdateDayNight(dt);
 
         World.ShowPreviewAlways = ShowDebugGeometry;
-        if (AllowEditing)
+        if (AllowEditing && AllowPlayerControl)
         {
             UpdateToolSize();
             World.Update(Camera, Player.Bounds, _settings);
         }
 
-        // Partikel laufen über den unbeleuchteten Default-Shader → Weltlicht beim Spawn einbacken
+        // Particles run through the unlit default shader, so the world light is baked in on spawn
         Vector3 light = DayNight.AmbientColor + DayNight.SunlightColor * 0.8f;
         Particles.LightScale = Math.Clamp((light.X + light.Y + light.Z) / 3f, 0.15f, 1.1f);
         Particles.Update(World, dt);
@@ -158,12 +171,12 @@ public sealed class VoxelTerrainScene : IDisposable
     }
 
     /// <summary>
-    /// Fertige Meshes aus den Worker-Threads hochladen. Muss auch bei offenem Menü laufen,
-    /// sonst bleibt die Welt nach einem Moduswechsel halb gebaut stehen.
+    /// Upload finished meshes from the worker threads. Has to run while a menu is open too, or
+    /// the world stays half-built after a mode switch.
     /// </summary>
     public void PumpMeshUploads() => Meshes.Update();
 
-    /// <summary>Mausrad stellt die Bau-Reichweite, mit Strg den Radius des Kugel-Brushes</summary>
+    /// <summary>Mouse wheel sets the build reach, Ctrl+wheel the radius of the sphere brush</summary>
     private void UpdateToolSize()
     {
         float wheel = Raylib.GetMouseWheelMove();
@@ -174,50 +187,49 @@ public sealed class VoxelTerrainScene : IDisposable
         else
             _settings.BuildReach = Math.Clamp(_settings.BuildReach + wheel, 2f, 60f);
 
-        World.PulsePreview(); // Vorschau kurz zeigen, damit die neue Größe sichtbar wird
+        World.PulsePreview(); // flash the preview so the new size is visible
     }
 
     private void UpdateDayNight(float dt)
     {
-        // Sonne und Mond wandern mit dem Spieler mit — wirken dadurch unendlich fern
+        // Sun and moon travel with the player, which makes them read as infinitely far away
         DayNight.Center = Player.Position;
         DayNight.DayLengthSeconds = _settings.DayLengthSeconds;
 
-        if (_settings.TimeOfDay != _menuTimeOfDay) DayNight.TimeOfDayHours = _settings.TimeOfDay;
+        if (_settings.SunAngle != _menuSunAngle) DayNight.SunAngleDegrees = _settings.SunAngle;
         if (_settings.TimeFlow != _menuTimeFlow) DayNight.TimeScale = _settings.TimeFlow;
 
         DayNight.Update(dt);
 
-        // Nur das Tempo zurückspiegeln — die Uhrzeit im Menü bleibt der gesetzte Sprungpunkt,
-        // sonst stünde sie beim Beenden auf der Nachtzeit
+        // Mirror back what the game itself changed via Z/U: the clock speed while time runs,
+        // the sun angle while it stands still
         _settings.TimeFlow = DayNight.TimeScale;
-        _menuTimeOfDay = _settings.TimeOfDay;
+        if (!DayNight.AutoAdvance) _settings.SunAngle = DayNight.SunAngleDegrees;
+
+        _menuSunAngle = _settings.SunAngle;
         _menuTimeFlow = _settings.TimeFlow;
     }
 
     private void ApplyShake(float dt)
     {
-        if (_shake <= 0f)
-        {
-            _shakeOffset = Vector3.Zero;
-            return;
-        }
+        if (_shake <= 0f) return;
 
         _shake = MathF.Max(0f, _shake - dt * 2.5f);
-        _shakeOffset = new Vector3(
+
+        var offset = new Vector3(
             Random.Shared.NextSingle() - 0.5f,
             Random.Shared.NextSingle() - 0.5f,
             Random.Shared.NextSingle() - 0.5f) * _shake * 0.6f;
 
         Camera3D shaken = Camera;
-        shaken.Position += _shakeOffset;
-        shaken.Target += _shakeOffset;
+        shaken.Position += offset;
+        shaken.Target += offset;
         Camera = shaken;
     }
 
     /// <summary>
-    /// Krater schlagen: weiche Flanke, damit die Kuhle auch im Smooth-Modus rund wird,
-    /// dazu Trümmer, Feuer und Rauch am Einschlagpunkt.
+    /// Blow a crater: a soft rim so the hollow stays round in Smooth mode as well, plus debris,
+    /// fire and smoke at the point of impact.
     /// </summary>
     public void Explode(Vector3 center, float radius, float power = 1.35f)
     {
@@ -226,12 +238,12 @@ public sealed class VoxelTerrainScene : IDisposable
 
         Particles.SpawnExplosion(center, debris, power);
 
-        // Der Spieler darf beim Sprengen nicht als Bauhindernis zählen — leere Box statt Spielerbox
+        // An explosion must not treat the player as an obstacle: pass an empty box instead of theirs
         var noBounds = new BoundingBox(new Vector3(float.MaxValue), new Vector3(float.MaxValue));
         World.SculptBlob(center, radius, add: false, edge: radius * 0.36f, BlockRegistry.Stone, noBounds);
     }
 
-    /// <summary>Oberkante des Geländes an dieser XZ-Position (Y des ersten freien Blocks darüber)</summary>
+    /// <summary>Top of the terrain at this XZ position (Y of the first free block above it)</summary>
     public float SurfaceHeight(float x, float z)
     {
         int blockX = (int)MathF.Floor(x);
@@ -265,7 +277,7 @@ public sealed class VoxelTerrainScene : IDisposable
 
     public void DrawBackground()
     {
-        // Himmel als vertikaler Verlauf: Zenit dunkler, Horizont heller (= Fog-Farbe)
+        // Sky as a vertical gradient: darker at the zenith, brighter at the horizon (= fog colour)
         Raylib.ClearBackground(DayNight.SkyZenithColor);
         Raylib.DrawRectangleGradientV(
             0, 0, Raylib.GetScreenWidth(), Raylib.GetScreenHeight(),

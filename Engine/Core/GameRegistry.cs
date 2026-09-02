@@ -1,14 +1,14 @@
 namespace VoxelEngine.Core;
 
 /// <summary>
-/// Ein Eintrag der Spieleliste. <paramref name="Id"/> ist der Ordnername unter <c>Games/</c> und
-/// bestimmt damit sowohl den Asset-Pfad als auch den Spielstand-Slot.
+/// One entry in the game list. <paramref name="Id"/> is the folder name under <c>Games/</c>, and
+/// therefore decides both the asset path and the save slot.
 /// </summary>
 public sealed record GameEntry(string Id, string Title, string Tagline, Func<Game> Create);
 
 /// <summary>
-/// Die Spiele, die der Host anbieten kann. Wird beim Start einmal gefüllt; das Pausenmenü
-/// zeigt daraus seine "Games"-Liste.
+/// The games the host can offer. Filled once at startup; the pause menu builds its "Games" list
+/// from it.
 /// </summary>
 public sealed class GameRegistry
 {
@@ -19,12 +19,12 @@ public sealed class GameRegistry
     public void Add(string id, string title, string tagline, Func<Game> create)
     {
         if (_entries.Any(entry => entry.Id == id))
-            throw new ArgumentException($"Spiel-Id '{id}' ist schon vergeben", nameof(id));
+            throw new ArgumentException($"Game id '{id}' is already taken", nameof(id));
 
         _entries.Add(new GameEntry(id, title, tagline, create));
     }
 
     public GameEntry Find(string id)
         => _entries.FirstOrDefault(entry => entry.Id == id)
-           ?? throw new ArgumentException($"Kein Spiel mit der Id '{id}' registriert", nameof(id));
+           ?? throw new ArgumentException($"No game registered with id '{id}'", nameof(id));
 }

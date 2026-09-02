@@ -4,13 +4,13 @@ using VoxelEngine.MathTools;
 namespace VoxelEngine.World;
 
 /// <summary>
-/// Ein freistehender Voxel-Körper — Planet, Mond, Asteroid. Anders als die gestreamte
-/// <see cref="VoxelWorld"/> hat er eine feste Kantenlänge, keine Nachbarn und eine eigene
-/// Lage im Raum: Position, Kantenlänge eines Voxels und eine Drehung um die Y-Achse.
+/// A free-standing voxel body: a planet, a moon, an asteroid. Unlike the streamed
+/// <see cref="VoxelWorld"/> it has a fixed side length, no neighbours and a place of its own in
+/// space: position, the size of a single voxel, and a spin around the Y axis.
 ///
-/// Die Kantenlänge ist bewusst <see cref="Chunk.Size"/> — damit lässt sich derselbe
-/// <c>ChunkMesher</c> verwenden, den auch das Gelände benutzt, samt Ambient Occlusion.
-/// Größere Körper entstehen nicht über mehr Voxel, sondern über <see cref="VoxelScale"/>.
+/// The side length is deliberately <see cref="Chunk.Size"/>, which makes it possible to reuse the
+/// same <c>ChunkMesher</c> the terrain runs through, ambient occlusion included. Bigger bodies come
+/// from <see cref="VoxelScale"/> rather than from more voxels.
 /// </summary>
 public sealed class VoxelBody
 {
@@ -22,21 +22,21 @@ public sealed class VoxelBody
 
     public required string Name { get; init; }
 
-    /// <summary>Mittelpunkt des Körpers in Weltkoordinaten</summary>
+    /// <summary>Centre of the body in world coordinates</summary>
     public Vector3 Position { get; set; }
 
-    /// <summary>Kantenlänge eines Voxels in Metern</summary>
+    /// <summary>Side length of one voxel in metres</summary>
     public float VoxelScale { get; init; } = 1f;
 
-    /// <summary>Eigendrehung um die Y-Achse in Radiant</summary>
+    /// <summary>Own rotation around the Y axis, in radians</summary>
     public float Spin { get; set; }
 
     public float SpinSpeed { get; init; }
 
-    /// <summary>Radius der Hüllkugel — für grobe Trefferabfragen und Kollision</summary>
+    /// <summary>Radius of the bounding sphere, for coarse hit tests and collision</summary>
     public float BoundingRadius => Size * 0.5f * MathF.Sqrt(3f) * VoxelScale;
 
-    /// <summary>Mesh muss neu gebaut werden</summary>
+    /// <summary>The mesh needs rebuilding</summary>
     public bool Dirty { get; private set; } = true;
 
     public void MarkClean() => Dirty = false;
@@ -60,11 +60,11 @@ public sealed class VoxelBody
         Dirty = true;
     }
 
-    /// <summary>Weltpunkt in Voxelkoordinaten des Körpers (0..Size)</summary>
+    /// <summary>A world point in the body's voxel coordinates (0..Size)</summary>
     public Vector3 ToLocal(Vector3 worldPoint)
         => RotateY(worldPoint - Position, -Spin) / VoxelScale + GridCenter;
 
-    /// <summary>Richtung aus der Welt in die Körperdrehung übersetzen (z. B. Sonnenlicht)</summary>
+    /// <summary>Translate a world direction into the body's rotation, sunlight for instance</summary>
     public Vector3 DirectionToLocal(Vector3 worldDirection) => RotateY(worldDirection, -Spin);
 
     public bool IsSolidAt(Vector3 worldPoint)
@@ -78,8 +78,8 @@ public sealed class VoxelBody
     }
 
     /// <summary>
-    /// Kugel aus dem Körper herausschlagen. Liefert die Anzahl entfernter Voxel — 0 heißt,
-    /// der Einschlag lag daneben und der Aufrufer kann den Treffer verwerfen.
+    /// Blast a sphere out of the body. Returns how many voxels were removed; 0 means the hit
+    /// landed beside it and the caller can discard it.
     /// </summary>
     public int Carve(Vector3 worldCenter, float worldRadius)
     {
@@ -123,9 +123,9 @@ public sealed class VoxelBody
     }
 
     /// <summary>
-    /// Kugelförmigen Körper füllen. <paramref name="roughness"/> wellt die Oberfläche über
-    /// 3D-Rauschen auf, <paramref name="coreDepth"/> ist die Dicke der Kruste in Voxeln —
-    /// darunter kommt das Kernmaterial zum Vorschein, sobald etwas abgetragen wird.
+    /// Fill the body as a sphere. <paramref name="roughness"/> ruffles the surface with 3D noise,
+    /// <paramref name="coreDepth"/> is the thickness of the crust in voxels; below it the core
+    /// material shows through as soon as something is taken off.
     /// </summary>
     public void FillSphere(float radius, byte crust, byte core, int seed, float roughness = 0.12f, int coreDepth = 4)
     {

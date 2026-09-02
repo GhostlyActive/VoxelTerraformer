@@ -1,7 +1,7 @@
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Standard-Nachschlagetabellen für Marching Cubes (Ecken-/Kanten-Konvention nach Paul Bourke).
+/// The standard marching-cubes lookup tables (corner and edge convention after Paul Bourke).
 /// Ecken: 0=(0,0,0) 1=(1,0,0) 2=(1,0,1) 3=(0,0,1) 4=(0,1,0) 5=(1,1,0) 6=(1,1,1) 7=(0,1,1)
 /// Kanten: 0=(0,1) 1=(1,2) 2=(2,3) 3=(3,0) 4=(4,5) 5=(5,6) 6=(6,7) 7=(7,4) 8=(0,4) 9=(1,5) 10=(2,6) 11=(3,7)
 /// </summary>
@@ -14,7 +14,7 @@ public static class MarchingCubesTables
     public static readonly int[] EdgeCornerA = { 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3 };
     public static readonly int[] EdgeCornerB = { 1, 2, 3, 0, 5, 6, 7, 4, 4, 5, 6, 7 };
 
-    /// <summary>Bitmaske der geschnittenen Kanten je Würfel-Konfiguration (aus TriTable abgeleitet)</summary>
+    /// <summary>Bit mask of the cut edges per cube configuration (derived from TriTable)</summary>
     public static readonly int[] EdgeMask = new int[256];
 
     static MarchingCubesTables()
@@ -28,7 +28,7 @@ public static class MarchingCubesTables
         }
     }
 
-    /// <summary>256 Konfigurationen à 16 Einträge: Kantenindizes je Dreieck, -1 beendet die Liste</summary>
+    /// <summary>256 configurations of 16 entries each: edge indices per triangle, -1 ends the list</summary>
     public static readonly int[] TriTable =
     {
         -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,

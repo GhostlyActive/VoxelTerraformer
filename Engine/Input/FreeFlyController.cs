@@ -5,9 +5,9 @@ using VoxelEngine.Config;
 namespace VoxelEngine.Input;
 
 /// <summary>
-/// Freie Flugkamera ohne Schwerkraft: Maus dreht, WASD schiebt in Blickrichtung, Space und
-/// Strg heben und senken, Shift beschleunigt. Der Schub wirkt auf eine Geschwindigkeit, die
-/// nur gedämpft abklingt — losgelassen gleitet man weiter, statt auf der Stelle zu stehen.
+/// A free-flying camera without gravity: the mouse turns, WASD pushes along the view, Space and
+/// Ctrl climb and descend, Shift accelerates. Thrust feeds a velocity that only decays through
+/// damping, so letting go coasts on instead of stopping dead.
 /// </summary>
 public sealed class FreeFlyController
 {
@@ -20,12 +20,12 @@ public sealed class FreeFlyController
 
     public Vector3 Position;
 
-    /// <summary>Schub in Metern pro Sekunde²</summary>
+    /// <summary>Thrust in metres per second squared</summary>
     public float Thrust { get; set; } = 90f;
 
     public float BoostMultiplier { get; set; } = 3.5f;
 
-    /// <summary>Anteil der Geschwindigkeit, der pro Sekunde abgebaut wird (0 = reibungsfrei)</summary>
+    /// <summary>Share of the velocity shed per second (0 = frictionless)</summary>
     public float Damping { get; set; } = 2.2f;
 
     public float MaxSpeed { get; set; } = 260f;
@@ -60,7 +60,7 @@ public sealed class FreeFlyController
 
     public Vector3 Right => Vector3.Normalize(Vector3.Cross(Forward, Vector3.UnitY));
 
-    /// <summary>Bremst den Flug ab, ohne die Blickrichtung zu ändern</summary>
+    /// <summary>Kills the motion without changing where you are looking</summary>
     public void Halt() => _velocity = Vector3.Zero;
 
     public void Teleport(Vector3 position)
@@ -99,7 +99,7 @@ public sealed class FreeFlyController
 
         Position += _velocity * dt;
 
-        // Sichtfeld zieht mit dem Tempo auf — verkauft die Geschwindigkeit im leeren Raum
+        // The field of view widens with speed, which sells the pace in empty space
         float targetFov = _settings.FieldOfView + Math.Clamp(speed / 12f, 0f, 18f);
         _fov += (targetFov - _fov) * MathF.Min(1f, 4f * dt);
 

@@ -6,8 +6,8 @@ using VoxelEngine.Core;
 namespace Terraformer;
 
 /// <summary>
-/// Einstiegspunkt: meldet die Spiele an und übergibt an den Host. Ein weiteres Spiel braucht
-/// genau eine Zeile hier plus seinen Ordner unter <c>Games/</c> — die Engine kennt keines davon.
+/// Entry point: registers the games and hands over to the host. Another game needs exactly one
+/// more line here plus its folder under <c>Games/</c>; the engine knows about none of them.
 /// </summary>
 public static class Program
 {
@@ -33,7 +33,7 @@ public static class Program
         {
             WindowTitle = "Terraformer",
 
-            // Rauchtest: ein paar Sekunden rendern, Screenshot ablegen, beenden
+            // Smoke test: render for a few seconds, drop a screenshot, quit
             SmokeFrames = HasFlag(args, "--smoke") ? 150 : 0,
         };
 
@@ -41,7 +41,7 @@ public static class Program
         host.Run(StartGameId(args, registry));
     }
 
-    /// <summary>--game &lt;Id&gt; startet direkt in einem Spiel; sonst die Sandbox</summary>
+    /// <summary>--game &lt;Id&gt; starts straight into a game; without it, the sandbox</summary>
     private static string StartGameId(string[] args, GameRegistry registry)
     {
         int index = Array.IndexOf(args, "--game");
@@ -53,7 +53,7 @@ public static class Program
 
         if (!known)
         {
-            Console.Error.WriteLine($"Unbekanntes Spiel '{requested}'. Bekannt: {string.Join(", ", registry.Entries.Select(entry => entry.Id))}");
+            Console.Error.WriteLine($"Unknown game '{requested}'. Known: {string.Join(", ", registry.Entries.Select(entry => entry.Id))}");
             return DefaultGame;
         }
 

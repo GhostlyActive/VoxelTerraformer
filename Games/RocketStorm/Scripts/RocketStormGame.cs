@@ -9,16 +9,19 @@ using VoxelEngine.World;
 namespace Terraformer.Games.RocketStorm;
 
 /// <summary>
-/// Überleben unter Beschuss. Die Welt läuft im Smooth-Modus, jeder Einschlag reißt einen runden
-/// Krater ins Gelände — und weil der Kugel-Brush aktiv bleibt, kann man sich dagegen eingraben.
-/// Wer im Loch sitzt, überlebt auch einen Volltreffer daneben.
+/// Survival under fire. The world runs in Smooth mode and every impact tears a round crater out
+/// of the ground. The sphere brush stays live, so cover is something you dig for yourself:
+/// sitting in a hole you can ride out a direct hit next to you.
 /// </summary>
 public sealed class RocketStormGame : Game
 {
     private const float MaxHealth = 100f;
 
-    /// <summary>Entfernung, ab der ein Einschlag nichts mehr anrichtet</summary>
+    /// <summary>Distance beyond which an impact does no damage at all</summary>
     private const float DamageRadius = 13f;
+
+    /// <summary>Fixed sun, slightly off the zenith so slopes and craters keep their contrast</summary>
+    private const float SunAngle = 75f;
 
     private VoxelTerrainScene _scene = null!;
     private RocketBarrage _barrage = null!;
@@ -40,8 +43,8 @@ public sealed class RocketStormGame : Game
 
     public override void Load()
     {
-        // Flacheres Gelände als in der Sandbox: die Krater sollen die Landschaft prägen,
-        // nicht in Bergflanken verschwinden
+        // Flatter than the sandbox: the craters should shape the landscape instead of
+        // disappearing into a mountainside
         var terrain = new DefaultTerrainGenerator
         {
             Seed = 7331,
@@ -57,6 +60,8 @@ public sealed class RocketStormGame : Game
             Spawn = new Vector3(128, 60, 128),
             Generator = terrain,
             Mode = TerrainMode.Smooth,
+            RunDayNight = false,
+            SunAngleDegrees = SunAngle,
         });
 
         _scene.Player.Teleport(new Vector3(128, _scene.SurfaceHeight(128, 128) + 1f, 128));
@@ -77,7 +82,8 @@ public sealed class RocketStormGame : Game
         {
             if (Raylib.IsKeyPressed(KeyboardKey.R)) Restart();
 
-            // Die Welt läuft weiter, nur der Beschuss ruht — sonst friert das Bild ein
+            // The world keeps running so the picture does not freeze, but the player is out:
+            // the scene ignores movement and mouse look while AllowPlayerControl is off
             _scene.Update(dt);
             return;
         }
@@ -97,7 +103,7 @@ public sealed class RocketStormGame : Game
 
         if (distance >= DamageRadius) return;
 
-        // Nah dran tut fast alles weh, weiter draußen fällt der Schaden schnell ab
+        // Close in it hurts badly, further out the damage falls off fast
         float falloff = 1f - distance / DamageRadius;
         Damage(70f * falloff * falloff);
     }
@@ -114,7 +120,7 @@ public sealed class RocketStormGame : Game
 
         _health = 0f;
         _dead = true;
-        _scene.AllowEditing = false;
+        _scene.AllowPlayerControl = false;
         _scene.Particles.SpawnExplosion(_scene.Player.Position + Vector3.UnitY, new Color(200, 60, 60, 255), 1.1f);
     }
 
@@ -124,7 +130,7 @@ public sealed class RocketStormGame : Game
         _survived = 0f;
         _dead = false;
         _hurtFlash = 0f;
-        _scene.AllowEditing = true;
+        _scene.AllowPlayerControl = true;
         _barrage.Reset();
     }
 

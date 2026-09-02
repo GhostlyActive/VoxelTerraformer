@@ -3,8 +3,8 @@ using Raylib_cs;
 namespace VoxelEngine.UI;
 
 /// <summary>
-/// Bausteine für die Spielanzeige. Text bekommt grundsätzlich einen dunklen Versatz —
-/// ohne ihn verschwindet helle Schrift über hellem Himmel oder Schnee.
+/// Building blocks for the in-game readouts. Text always gets a dark offset behind it: without
+/// one, light lettering disappears against bright sky or snow.
 /// </summary>
 public static class Hud
 {
@@ -31,7 +31,7 @@ public static class Hud
         Raylib.DrawCircle(x, y, 2.5f, color ?? Ink);
     }
 
-    /// <summary>Balken für Gesundheit, Hitze, Fortschritt — <paramref name="fill"/> in 0..1</summary>
+    /// <summary>Bar for health, heat or progress; <paramref name="fill"/> in 0..1</summary>
     public static void Bar(int x, int y, int width, int height, float fill, Color color, string? label = null)
     {
         Raylib.DrawRectangle(x, y, width, height, new Color(10, 14, 22, 190));

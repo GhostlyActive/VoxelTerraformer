@@ -5,18 +5,18 @@ using VoxelEngine.World;
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Dritte Voxel-Stufe: Marching Cubes über dem Sub-Voxel-Dichtefeld, geglättet mit einem
-/// Box-Filter. Weil die Zellen echte Füllgrade tragen und nicht nur an/aus, landet die
-/// Iso-Fläche zwischen zwei Gitterpunkten an der exakten Stelle — daraus entstehen runde
-/// Formen statt Treppen. Weiche Normalen kommen aus dem Dichtegradienten. Die Weltdaten
-/// bleiben unverändert, deshalb ist das Umschalten zwischen den Modi verlustfrei.
+/// The third voxel mode: marching cubes over the sub-voxel density field, smoothed with a box
+/// filter. Because the cells carry real fill values rather than just on and off, the iso surface
+/// lands at the exact spot between two grid points, which gives rounded shapes instead of stairs.
+/// Soft normals come from the density gradient. The world data is untouched, which is what makes
+/// switching between the modes lossless.
 /// </summary>
 public static class SmoothChunkMesher
 {
     /// <summary>
-    /// MC-Zellen pro Block; muss 8 teilen (1, 2, 4 oder 8).
-    /// 2 → 0,5 m Zellen: sehr weiche Landschaft, ~8 Mio. Vertices bei voller Sichtweite.
-    /// 4 → 0,25 m Zellen: mehr Feinheit, aber die vierfache Geometrie.
+    /// Marching-cubes cells per block; has to divide 8 (1, 2, 4 or 8).
+    /// 2 gives 0.5 m cells: a very soft landscape, around 8M vertices at full view distance.
+    /// 4 gives 0.25 m cells: finer, but four times the geometry.
     /// </summary>
     public const int Divisions = 2;
 
@@ -24,7 +24,7 @@ public static class SmoothChunkMesher
     private const float CellSize = 1f / Divisions;
     private const float Iso = SubVoxels.Iso / 255f;
 
-    // Dichtegitter je Block: Indizes -1 .. Divisions+1 (ein Ring extra für die Gradienten)
+    // Density grid per block: indices -1 .. Divisions+1 (one extra ring for the gradients)
     private const int GridSize = Divisions + 3;
     private const int GridOffset = 1;
 
@@ -124,8 +124,8 @@ public static class SmoothChunkMesher
                     int e1 = MarchingCubesTables.TriTable[cubeIndex * 16 + i + 1];
                     int e2 = MarchingCubesTables.TriTable[cubeIndex * 16 + i + 2];
 
-                    // Die Tabelle setzt "innen" = unterhalb des Iso-Werts; bei uns ist innen die
-                    // hohe Dichte, deshalb die Reihenfolge drehen — sonst zeigen alle Flächen nach innen
+                    // The table assumes "inside" = below the iso value; here inside is the high
+                    // density, so the order is flipped, or every face would point inwards
                     Emit(vertices, normals, colors, edgePosition[e0], edgeNormal[e0], albedo, emissive);
                     Emit(vertices, normals, colors, edgePosition[e2], edgeNormal[e2], albedo, emissive);
                     Emit(vertices, normals, colors, edgePosition[e1], edgeNormal[e1], albedo, emissive);
@@ -161,8 +161,8 @@ public static class SmoothChunkMesher
     }
 
     /// <summary>
-    /// Blocktypen und Sub-Voxel-Dichtefelder der 3x3x3-Nachbarschaft einsammeln.
-    /// Liefert false, wenn hier keine Oberfläche verlaufen kann (alles voll oder alles leer).
+    /// Collect the block types and sub-voxel density fields of the 3x3x3 neighbourhood.
+    /// Returns false when no surface can run through here (everything full or everything empty).
     /// </summary>
     private static bool GatherNeighborhood(
         byte[] padded,
@@ -197,7 +197,7 @@ public static class SmoothChunkMesher
                 if (refinements.TryGetValue(index, out byte[]? field))
                 {
                     neighborField[slot] = field;
-                    anyOpen = true;    // bearbeitet → enthält auch Leerraum
+                    anyOpen = true;    // edited, so it contains empty space too
                     anyRefined = true;
                 }
             }
@@ -211,9 +211,9 @@ public static class SmoothChunkMesher
     }
 
     /// <summary>
-    /// Dichte an jedem Gitterpunkt = Mittel der SubPerCell³ umliegenden Sub-Voxel.
-    /// Die Boxen benachbarter Gitterpunkte kacheln lückenlos, jedes Sub-Voxel zählt also genau einmal.
-    /// Rein positionsabhängig, deshalb stimmen benachbarte Blöcke an ihren Grenzen überein.
+    /// Density at each grid point = the mean of the SubPerCell³ sub-voxels around it.
+    /// The boxes of neighbouring grid points tile without gaps, so every sub-voxel counts exactly once.
+    /// It depends on position alone, which is why neighbouring blocks agree at their borders.
     /// </summary>
     private static void BuildDensity(bool[] neighborSolid, byte[]?[] neighborField, float[] density)
     {
@@ -238,10 +238,10 @@ public static class SmoothChunkMesher
     }
 
     /// <summary>
-    /// Schneller Weg für Nachbarschaften ganz ohne Dichtefeld — also für den weitaus größten
-    /// Teil der Welt. Dort ist jeder Block ganz voll oder ganz leer, der Box-Filter braucht
-    /// die 64 Einzelabtastungen also nicht: es genügt, wie viele davon je Achse in welchen
-    /// Nachbarblock fallen. Das Ergebnis ist bitgleich zu <see cref="BuildDensity"/>.
+    /// The fast path for neighbourhoods without any density field at all, which is by far most of
+    /// the world. There every block is either completely full or completely empty, so the box filter
+    /// does not need its 64 individual samples: it is enough to know how many of them fall into
+    /// which neighbouring block per axis. The result is bit-identical to <see cref="BuildDensity"/>.
     /// </summary>
     private static void BuildBlockDensity(bool[] neighborSolid, AxisSpan[] axisSpan, float[] density)
     {
@@ -287,7 +287,7 @@ public static class SmoothChunkMesher
         }
     }
 
-    /// <summary>Wie sich die SubPerCell Abtastpunkte einer Achse auf zwei benachbarte Blöcke verteilen</summary>
+    /// <summary>How the SubPerCell sample points of one axis are split across two neighbouring blocks</summary>
     private readonly record struct AxisSpan(int OffsetA, int CountA, int CountB);
 
     private static AxisSpan SpanFor(int g)
@@ -302,7 +302,7 @@ public static class SmoothChunkMesher
         return new AxisSpan(offsetA, countA, SubPerCell - countA);
     }
 
-    /// <summary>Füllgrad 0..255; Koordinaten sind block-lokale Sub-Voxel (dürfen in die Nachbarblöcke reichen)</summary>
+    /// <summary>Fill 0..255; coordinates are block-local sub-voxels and may reach into the neighbours</summary>
     private static int Fill(bool[] neighborSolid, byte[]?[] neighborField, int sx, int sy, int sz)
     {
         int slot = ((sx >> SubVoxels.Shift) + 1)
@@ -315,7 +315,7 @@ public static class SmoothChunkMesher
         return SubVoxels.Get(field, sx & SubVoxels.LowMask, sy & SubVoxels.LowMask, sz & SubVoxels.LowMask);
     }
 
-    /// <summary>Nach außen zeigende Normale = entgegen dem Dichtegradienten</summary>
+    /// <summary>The outward normal is the opposite of the density gradient</summary>
     private static Vector3 GradientNormal(float[] density, int gx, int gy, int gz)
     {
         var gradient = new Vector3(
@@ -329,11 +329,11 @@ public static class SmoothChunkMesher
     private static Vector3 SafeNormalize(Vector3 v)
         => v.LengthSquared() < 1e-12f ? Vector3.UnitY : Vector3.Normalize(v);
 
-    /// <summary>Farbe des Blocks, der die Oberfläche trägt — bei Luft der nächste solide Nachbar (Boden bevorzugt)</summary>
+    /// <summary>Colour of the block carrying the surface; for air, the nearest solid neighbour (the floor preferred)</summary>
     private static (Color Albedo, byte Emissive) SurfaceMaterial(
         byte[] neighborId, bool[] neighborSolid, int x, int y, int z, int worldX, int worldZ)
     {
-        const int below = 10; // Slot von (0,-1,0) — Böden sollen ihre eigene Farbe behalten
+        const int below = 10; // slot of (0,-1,0): floors should keep their own colour
 
         int bestSlot = 13; // Mitte
         if (!neighborSolid[13])
@@ -343,7 +343,7 @@ public static class SmoothChunkMesher
                 if (neighborSolid[slot])
                     bestSlot = slot;
 
-            if (bestSlot < 0) return (Color.Magenta, 0); // kann nicht auftreten: GatherNeighborhood verlangt anySolid
+            if (bestSlot < 0) return (Color.Magenta, 0); // cannot happen: GatherNeighborhood requires anySolid
         }
 
         int dx = bestSlot % 3 - 1;
@@ -360,7 +360,7 @@ public static class SmoothChunkMesher
     private static int GridIndex(int gx, int gy, int gz)
         => (gx + GridOffset) + GridSize * ((gy + GridOffset) + GridSize * (gz + GridOffset));
 
-    // Welche Kanten berühren welche Ecke — spart das Berechnen ungenutzter Gradienten
+    // Which edges touch which corner; saves computing gradients that are never used
     private static readonly int[] CornerEdgeMask = BuildCornerEdgeMask();
 
     private static int[] BuildCornerEdgeMask()

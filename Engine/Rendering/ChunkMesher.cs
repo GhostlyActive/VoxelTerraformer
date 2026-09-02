@@ -4,26 +4,26 @@ using VoxelEngine.World;
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Baut aus einem gepaddeten Block-Snapshot die Vertex-Daten eines Chunks.
-/// Läuft komplett ohne Raylib-Aufrufe und darf deshalb auf einem Worker-Thread laufen.
+/// Builds the vertex data of a chunk from a padded block snapshot.
+/// Makes no raylib calls at all, which is what allows it to run on a worker thread.
 /// </summary>
 public static class ChunkMesher
 {
-    // Chunk + 1 Voxel Rand in alle Richtungen (für Face-Culling und AO über Chunk-Grenzen)
+    // Chunk plus a one-voxel border in every direction (for face culling and AO across chunk borders)
     public const int PaddedSize = Chunk.Size + 2;
 
     public static int PaddedLength(int worldHeight) => PaddedSize * PaddedSize * (worldHeight + 2);
 
-    // Nimmt lokale Koordinaten -1..Size bzw. -1..worldHeight entgegen
+    // Takes local coordinates -1..Size, or -1..worldHeight on Y
     public static int Index(int x, int y, int z) => (x + 1) + PaddedSize * ((z + 1) + PaddedSize * (y + 1));
 
     private struct FaceInfo
     {
-        public int Nx, Ny, Nz;                  // Normale
-        public int Ux, Uy, Uz;                  // Tangente u (für AO)
-        public int Vx, Vy, Vz;                  // Tangente v (für AO)
-        public (int X, int Y, int Z)[] Corners; // 4 Ecken, gegen den Uhrzeigersinn von außen gesehen
-        public float Shade;                     // gebackenes Richtungs-Ambient (oben hell, unten dunkel)
+        public int Nx, Ny, Nz;                  // normal
+        public int Ux, Uy, Uz;                  // tangent u (for AO)
+        public int Vx, Vy, Vz;                  // tangent v (for AO)
+        public (int X, int Y, int Z)[] Corners; // 4 corners, counter-clockwise seen from outside
+        public float Shade;                     // baked directional ambient (bright on top, dark below)
     }
 
     private static readonly FaceInfo[] _faces =
@@ -42,7 +42,7 @@ public static class ChunkMesher
                 Corners = new[] { (0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0) } },
     };
 
-    // Zwei Dreiecke pro Quad; Diagonale wird nach AO gewählt (sonst Anisotropie-Artefakte)
+    // Two triangles per quad; the diagonal is picked by AO, or anisotropy artefacts show up
     private static readonly int[] _quadOrder = { 0, 1, 2, 0, 2, 3 };
     private static readonly int[] _quadOrderFlipped = { 1, 2, 3, 1, 3, 0 };
 
@@ -100,8 +100,8 @@ public static class ChunkMesher
         };
     }
 
-    // Ein Nachbar verdeckt eine Fläche nur, wenn er solide ist UND seine zugewandte
-    // Sub-Voxel-Randschicht durchgehend fest ist (Vollblöcke sind implizit voll)
+    // A neighbour only hides a face when it is solid AND its facing sub-voxel border layer is solid
+    // all the way through (full blocks are implicitly full)
     private static bool NeighborOccludes(byte[] padded, Dictionary<int, byte[]> refinements, int nx, int ny, int nz, int faceIndex)
     {
         int index = Index(nx, ny, nz);
@@ -145,7 +145,7 @@ public static class ChunkMesher
                 }
                 else
                 {
-                    // Über die Blockgrenze: das zugewandte Sub-Voxel des Nachbarblocks prüfen
+                    // Across the block border: check the facing sub-voxel of the neighbouring block
                     int index = Index(x + face.Nx, y + face.Ny, z + face.Nz);
                     if (!BlockRegistry.IsSolid(padded[index]))
                     {
@@ -187,7 +187,7 @@ public static class ChunkMesher
         float originY = y + sy * cell;
         float originZ = z + sz * cell;
 
-        // Kein Sub-Voxel-AO — leicht abgedunkelt, damit Höhlungen nicht flach-hell wirken
+        // No sub-voxel AO here; darkened a little so hollows do not read as flat and bright
         float light = face.Shade * 0.92f;
         byte r = (byte)(albedo.R * light);
         byte g = (byte)(albedo.G * light);
@@ -222,7 +222,7 @@ public static class ChunkMesher
         Color albedo,
         byte emissive)
     {
-        // Luftzelle vor der Fläche — von dort aus werden die AO-Nachbarn abgetastet
+        // The air cell in front of the face; the AO neighbours are sampled from there
         int airX = x + face.Nx;
         int airY = y + face.Ny;
         int airZ = z + face.Nz;
@@ -233,7 +233,7 @@ public static class ChunkMesher
         {
             (int cx, int cy, int cz) = face.Corners[i];
 
-            // Vorzeichen der Tangenten Richtung dieser Ecke
+            // Signs of the tangents towards this corner
             int signU = (cx * face.Ux + cy * face.Uy + cz * face.Uz) == 1 ? 1 : -1;
             int signV = (cx * face.Vx + cy * face.Vy + cz * face.Vz) == 1 ? 1 : -1;
 

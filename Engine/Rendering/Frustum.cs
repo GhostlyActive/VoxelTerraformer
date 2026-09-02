@@ -4,7 +4,7 @@ using System.Numerics;
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Sichtkegel der Kamera als 6 Ebenen — Chunks außerhalb müssen gar nicht erst gezeichnet werden.
+/// The camera's view frustum as 6 planes: chunks outside it never have to be drawn at all.
 /// </summary>
 public readonly struct Frustum
 {
@@ -14,7 +14,7 @@ public readonly struct Frustum
 
     public static Frustum FromCamera(Camera3D camera, float aspect)
     {
-        // Near/Far entsprechen den rlgl-Defaults (0.01 / 1000), damit Culling und Rendering zusammenpassen
+        // Near and far match the rlgl defaults (0.01 / 1000) so culling and rendering agree
         Matrix4x4 view = Matrix4x4.CreateLookAt(camera.Position, camera.Target, camera.Up);
         Matrix4x4 projection = Matrix4x4.CreatePerspectiveFieldOfView(
             camera.FovY * (MathF.PI / 180f), aspect, 0.01f, 1000f);
@@ -38,7 +38,7 @@ public readonly struct Frustum
     {
         foreach (Plane plane in _planes)
         {
-            // Positiv-Ecke: der Punkt der Box, der am weitesten in Normalenrichtung liegt
+            // Positive vertex: the corner of the box furthest along the plane normal
             var p = new Vector3(
                 plane.Normal.X >= 0 ? max.X : min.X,
                 plane.Normal.Y >= 0 ? max.Y : min.Y,

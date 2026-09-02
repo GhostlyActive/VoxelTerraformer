@@ -4,27 +4,26 @@ using System.Numerics;
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Wolkenschicht aus Voxeln: jede belegte Zelle des Himmelrasters wird zu einem Klumpen
-/// aus Würfeln, deren Form aus einem Ellipsoid mit Hash-Rauschen kommt — dadurch runde,
-/// unregelmäßige Wolken statt sichtbarer Kacheln. Die Schicht driftet nach Osten und
-/// verschiebt sich zellenweise nahtlos.
+/// A cloud layer made of voxels: every occupied cell of the sky grid becomes a lump of cubes
+/// whose shape comes from an ellipsoid roughened with hash noise, which gives rounded, irregular
+/// clouds instead of visible tiles. The layer drifts east and wraps cell by cell without a seam.
 /// </summary>
 public sealed class CloudLayer
 {
     private const float CellSize = 24f;
-    private const float CubeSize = 4f;       // Voxelgröße der Wolken
-    private const int BlobX = 6;             // Würfel je Achse im Klumpen
+    private const float CubeSize = 4f;       // voxel size of the clouds
+    private const int BlobX = 6;             // cubes per axis in a lump
     private const int BlobY = 3;
     private const int BlobZ = 6;
-    private const float Range = 250f;        // bis hinter das Fog-Ende, zieht mit dem Spieler mit
+    private const float Range = 250f;        // out past the fog, and it travels with the player
 
     public float Coverage { get; set; } = 0.35f;
     public float Height { get; set; } = 80f;
-    public float DriftSpeed { get; set; } = 1.2f;   // Blöcke pro Sekunde
+    public float DriftSpeed { get; set; } = 1.2f;   // blocks per second
 
     public void Draw(Camera3D camera, float time, float daylight01, Vector3 center)
     {
-        // tagsüber fast weiß, nachts dunkles Blaugrau
+        // nearly white by day, dark blue-grey at night
         Color color = Lerp(new Color(88, 98, 126, 255), new Color(250, 250, 255, 255), daylight01);
 
         float offset = time * DriftSpeed / CellSize;
@@ -50,7 +49,7 @@ public sealed class CloudLayer
                 Height,
                 cz * CellSize + CellSize / 2f);
 
-            // Was klar hinter der Kamera liegt, kostet sonst nur Würfel ohne Bild
+            // Anything clearly behind the camera would only cost cubes with nothing to show
             Vector3 toCell = cellCenter - camera.Position;
             if (toCell.LengthSquared() > CellSize * CellSize && Vector3.Dot(toCell, forward) < 0f) continue;
 
@@ -58,10 +57,10 @@ public sealed class CloudLayer
         }
     }
 
-    /// <summary>Ein Klumpen: Würfel innerhalb eines Ellipsoids, dessen Rand per Hash ausgefranst wird</summary>
+    /// <summary>One lump: cubes inside an ellipsoid whose edge is frayed with a hash</summary>
     private static void DrawBlob(Vector3 cellCenter, int hx, int hz, Color color, Vector3 cube)
     {
-        // Jede Wolke bekommt eigene Proportionen, sonst wiederholt sich die Form zu deutlich
+        // Every cloud gets its own proportions, or the shape repeats too obviously
         float stretchX = 0.75f + Hash(hx, hz, 91) * 0.55f;
         float stretchZ = 0.75f + Hash(hx, hz, 92) * 0.55f;
 
@@ -69,12 +68,12 @@ public sealed class CloudLayer
         for (int iz = 0; iz < BlobZ; iz++)
         for (int ix = 0; ix < BlobX; ix++)
         {
-            // -1..1 relativ zur Klumpenmitte
+            // -1..1 relative to the centre of the lump
             float nx = (ix - (BlobX - 1) / 2f) / (BlobX / 2f) / stretchX;
             float ny = (iy - (BlobY - 1) / 2f) / (BlobY / 2f);
             float nz = (iz - (BlobZ - 1) / 2f) / (BlobZ / 2f) / stretchZ;
 
-            // Unterseite flacher als die Oberseite — so sitzen Wolken auf einer Basis auf
+            // The underside is flatter than the top, so clouds sit on a base
             float squash = ny < 0f ? 1.5f : 1f;
             float distance = nx * nx + (ny * squash) * (ny * squash) + nz * nz;
 

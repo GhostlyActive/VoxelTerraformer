@@ -11,20 +11,20 @@ using VoxelEngine.World;
 namespace Terraformer.Games.SolarSystem;
 
 /// <summary>
-/// Ein kleines Sonnensystem aus Voxelkugeln. Man fliegt frei zwischen Planeten und Monden und
-/// schießt sie mit Voxelbällen auseinander — jeder Treffer schlägt echte Voxel aus dem Körper,
-/// bis am Ende ein durchlöcherter Klumpen seine Bahn weiterzieht.
+/// A small solar system built from voxel spheres. You fly freely between planets and moons and
+/// shoot them apart: every hit takes real voxels out of a body, until what is left of it carries
+/// on around its orbit as a hollowed-out lump.
 /// </summary>
 public sealed class SolarSystemGame : Game
 {
     private const float SunRadius = 90f;
 
-    /// <summary>Der Standard-Far-Plane von 1000 würde das halbe System wegschneiden</summary>
+    /// <summary>The default far plane of 1000 would cut away half the system</summary>
     private const double FarClipPlane = 20000.0;
 
     /// <summary>
-    /// Die Materialien werden einmal pro Programmlauf angemeldet — <see cref="Game.Load"/> läuft
-    /// bei jedem Wechsel in dieses Spiel erneut, und jede Anmeldung verbraucht eine Block-Id.
+    /// Materials are registered once per process: <see cref="Game.Load"/> runs again on every
+    /// switch into this game, and each registration burns a block id.
     /// </summary>
     private static class Materials
     {
@@ -59,7 +59,7 @@ public sealed class SolarSystemGame : Game
     {
         "WASD + mouse: fly, Space/Ctrl: climb and descend",
         "Shift: afterburner, nothing slows you down out here",
-        "LMB: fire a voxel ball",
+        "LMB: hold to charge the round, release to fire",
         "F: full stop | F3: debug | ESC: menu",
     };
 
@@ -69,7 +69,7 @@ public sealed class SolarSystemGame : Game
 
         _shader = new TerrainShader
         {
-            // Nebel im Vakuum ergibt nichts — die Grenzen liegen weit hinter allen Bahnen
+            // Fog makes no sense in vacuum, so its range sits far behind every orbit
             FogStart = 12000f,
             FogEnd = 19000f,
         };
@@ -155,15 +155,17 @@ public sealed class SolarSystemGame : Game
     {
         _time += dt;
 
-        // Planeten vor ihren Monden — die Bahn eines Mondes hängt an der Position seines Planeten
+        // Planets before their moons: a moon's orbit hangs off its planet's current position
         foreach (CelestialBody body in _bodies)
             body.Advance(dt);
 
         _camera = _ship.Update(dt);
 
         if (Raylib.IsKeyPressed(KeyboardKey.F)) _ship.Halt();
-        if (Raylib.IsMouseButtonDown(MouseButton.Left))
-            _cannon.Fire(_ship.Position, _ship.Forward, _ship.Velocity);
+
+        if (Raylib.IsMouseButtonDown(MouseButton.Left)) _cannon.Hold(dt);
+        if (Raylib.IsMouseButtonReleased(MouseButton.Left))
+            _cannon.Release(_ship.Position, _ship.Forward, _ship.Velocity);
 
         _cannon.Update(dt, _bodies, OnShotHit);
         _particles.Update(null, dt);
@@ -171,9 +173,9 @@ public sealed class SolarSystemGame : Game
         KeepShipOutOfSolids();
     }
 
-    private void OnShotHit(CelestialBody target, Vector3 point)
+    private void OnShotHit(CelestialBody target, Vector3 point, float blastRadius)
     {
-        int removed = target.Body.Carve(point, VoxelCannon.BlastRadius);
+        int removed = target.Body.Carve(point, blastRadius);
         target.RegisterCarve(removed);
 
         _hits++;
@@ -184,13 +186,13 @@ public sealed class SolarSystemGame : Game
             target.Body.Get((int)local.X, (int)local.Y, (int)local.Z),
             (int)local.X, (int)local.Y, (int)local.Z);
 
-        _cannon.SpawnImpact(point, debris);
+        _cannon.SpawnImpact(point, debris, blastRadius);
     }
 
     /// <summary>
-    /// Kollision mit den Körpern: das Schiff wird radial nach außen geschoben, bis es wieder im
-    /// Freien steht. Ein voller Physikkörper wäre hier Übertreibung — es geht nur darum, dass
-    /// man nicht im Planeten steckenbleibt.
+    /// Collision with the bodies: the ship is pushed straight outwards until it is clear again.
+    /// A real physics body would be overkill here; the point is only that you cannot end up
+    /// stuck inside a planet.
     /// </summary>
     private void KeepShipOutOfSolids()
     {
@@ -214,7 +216,7 @@ public sealed class SolarSystemGame : Game
             Vector3 delta = _ship.Position - body.Position;
             Vector3 outward = delta.LengthSquared() < 1e-3f ? Vector3.UnitY : Vector3.Normalize(delta);
 
-            // Schrittweise nach draußen, bis die Position frei ist — höchstens bis zur Hüllkugel
+            // Step outwards until the spot is free, at most as far as the bounding sphere
             Vector3 position = _ship.Position;
             for (int step = 0; step < 64 && body.IsSolidAt(position); step++)
                 position += outward * body.VoxelScale;
@@ -242,13 +244,15 @@ public sealed class SolarSystemGame : Game
         foreach (CelestialBody celestial in _bodies)
             _renderer.Draw(celestial.Body, _shader, Vector3.Zero, sunColor, ambient, _camera.Position);
 
+        // Muzzle down and to the right rather than dead centre, or the growing ball hides the target
+        _cannon.DrawCharge(_ship.Position + _ship.Forward * 6f + _ship.Right * 1.5f - Vector3.UnitY * 1.1f);
         _cannon.Draw();
         _particles.Draw();
     }
 
     /// <summary>
-    /// Sonne mit Korona. Eine einzelne durchscheinende Hülle sähe wie ein Ring aus — erst
-    /// mehrere Schalen mit fallender Deckkraft ergeben nach außen einen weichen Abfall.
+    /// Sun with a corona. A single translucent shell would read as a ring; only several shells
+    /// with falling opacity give a soft outward falloff.
     /// </summary>
     private void DrawSun()
     {
@@ -267,7 +271,7 @@ public sealed class SolarSystemGame : Game
         Raylib.EndBlendMode();
     }
 
-    /// <summary>Bahnen als dünne Ringe — ohne sie verliert man im leeren Raum jede Orientierung</summary>
+    /// <summary>Orbits as thin rings: without them you lose all sense of place out here</summary>
     private void DrawOrbits()
     {
         foreach (CelestialBody celestial in _bodies)
@@ -286,6 +290,7 @@ public sealed class SolarSystemGame : Game
         int height = Context.ScreenHeight;
 
         Hud.Crosshair(width, height, new Color(255, 220, 120, 255));
+        DrawChargeMeter(width, height);
 
         CelestialBody? target = FindTarget();
         if (target != null)
@@ -306,17 +311,30 @@ public sealed class SolarSystemGame : Game
             _ship.Boosting ? Hud.Warning : Hud.Ink);
         Hud.Text($"Hits {_hits} | Voxels blasted {_voxelsDestroyed}", 16, height - 48, 18);
 
-        Hud.Centered("LMB fire | Shift boost | F brake | ESC menu", width / 2, height - 40, 16);
+        Hud.Centered("Hold LMB to charge | Shift boost | F brake | ESC menu", width / 2, height - 40, 16);
 
         if (!Context.DebugOverlay) return;
 
         Hud.Text($"Shots {_cannon.ActiveShots} | Particles {_particles.ActiveParticles}", 16, 130, 18, Color.SkyBlue);
     }
 
+    /// <summary>Charge bar right under the crosshair, where the eye already is while aiming</summary>
+    private void DrawChargeMeter(int width, int height)
+    {
+        if (!_cannon.Charging) return;
+
+        float charge = _cannon.Charge01;
+        Color color = charge >= 0.999f
+            ? new Color(255, 240, 160, 255)
+            : new Color((byte)255, (byte)(150 + 90 * charge), (byte)70, (byte)255);
+
+        Hud.Bar(width / 2 - 70, height / 2 + 26, 140, 10, charge, color);
+    }
+
     /// <summary>
-    /// Der Körper, auf den gezielt wird: der mit dem kleinsten Winkel zur Blickachse, solange
-    /// er überhaupt vor dem Schiff liegt. Ohne Kandidat der nächstgelegene — dann dient die
-    /// Anzeige als Wegweiser statt als Zielerfassung.
+    /// The body being aimed at: the one closest to the line of sight, as long as it is in front
+    /// of the ship at all. With no candidate, the nearest one instead — the readout then works as
+    /// a signpost rather than a target lock.
     /// </summary>
     private CelestialBody? FindTarget()
     {
@@ -340,7 +358,7 @@ public sealed class SolarSystemGame : Game
                 nearest = celestial;
             }
 
-            // Große Körper dürfen weiter neben der Achse liegen und gelten trotzdem als anvisiert
+            // Big bodies may sit further off the axis and still count as the target
             float alignment = Vector3.Dot(delta / distance, forward);
             float slack = celestial.Body.BoundingRadius / distance * 0.6f;
 
@@ -358,6 +376,6 @@ public sealed class SolarSystemGame : Game
         _renderer.Dispose();
         _shader.Unload();
 
-        Rlgl.SetClipPlanes(0.01, 1000.0); // Raylib-Standard wiederherstellen, sonst erbt ihn das nächste Spiel
+        Rlgl.SetClipPlanes(0.01, 1000.0); // back to the raylib default, or the next game inherits this
     }
 }

@@ -3,9 +3,9 @@ using System.Text.Json;
 namespace VoxelEngine.Config;
 
 /// <summary>
-/// Die Regler aus dem Tuning-Menü (Taste M) — geteilt von allen Spielen, damit sich Maus,
-/// Tempo und Sicht überall gleich anfühlen. Werden pro Rechner im Benutzerprofil gespeichert
-/// (AppData bzw. ~/.config), damit sie Neustarts überleben.
+/// The dials from the tuning menu (key M), shared by every game so that mouse, pace and view feel
+/// the same everywhere. Stored per machine in the user profile (AppData or ~/.config) so they
+/// survive restarts.
 /// </summary>
 public sealed class EngineSettings
 {
@@ -15,42 +15,42 @@ public sealed class EngineSettings
     public float JumpSpeed { get; set; } = 10.2f;
     public float Gravity { get; set; } = 18.0f;
 
-    /// <summary>Reichweite für Abbauen und Bauen; ohne Treffer entsteht der Block frei in der Luft auf dieser Distanz</summary>
+    /// <summary>Reach for removing and placing; with nothing in the way the block appears in mid-air at this distance</summary>
     public float BuildReach { get; set; } = 8f;
 
-    /// <summary>Kugelradius des Sculpt-Brushes (Taste V, Ctrl+Mausrad)</summary>
+    /// <summary>Sphere radius of the sculpt brush (key V, Ctrl+wheel)</summary>
     public float SculptRadius { get; set; } = 0.7f;
 
-    /// <summary>Weiche Pinselflanke als Vielfaches des Radius (nur Smooth-Modus): 0 = harte Kante, größer = rundere Blobs</summary>
+    /// <summary>Soft brush falloff as a multiple of the radius (Smooth mode only): 0 = hard edge, larger = rounder blobs</summary>
     public float BrushSoftness { get; set; } = 0.6f;
 
-    /// <summary>Tempo der Baufront in Metern pro Sekunde (Rechtsklick). Klein = langsam wachsend und gut dosierbar.</summary>
+    /// <summary>Speed of the build front in metres per second (right mouse). Low = grows slowly and stays controllable.</summary>
     public float BuildSpeed { get; set; } = 2.5f;
 
-    /// <summary>Wie lange Pinselkugel bzw. Blockrahmen nach einer Größenänderung sichtbar bleiben (Sekunden)</summary>
+    /// <summary>How long the brush sphere or block outline stays visible after a size change (seconds)</summary>
     public float PreviewHold { get; set; } = 1.0f;
 
     public float FieldOfView { get; set; } = 60f;
 
-    /// <summary>Länge eines vollen Tag-Nacht-Zyklus in Sekunden</summary>
+    /// <summary>Length of a full day/night cycle in seconds</summary>
     public float DayLengthSeconds { get; set; } = 240f;
 
-    /// <summary>Startzeit und Sprungziel der Sonne in Stunden (12 = Mittag)</summary>
-    public float TimeOfDay { get; set; } = 12f;
+    /// <summary>Where the sun stands, in degrees: 0 = sunrise, 90 = noon, 180 = sunset</summary>
+    public float SunAngle { get; set; } = 90f;
 
-    /// <summary>Tempo des Tageslaufs; 0 hält die Sonne an (auch über Z/U im Spiel)</summary>
+    /// <summary>Speed of the day cycle; 0 stops the sun. Ignored by games that pin the sun.</summary>
     public float TimeFlow { get; set; } = 1f;
 
     public float FogStart { get; set; } = 100f;
     public float FogEnd { get; set; } = 230f;
 
-    /// <summary>Anteil der Himmelszellen, die eine Wolke tragen</summary>
+    /// <summary>Share of the sky cells that carry a cloud</summary>
     public float CloudCoverage { get; set; } = 0.35f;
     public float CloudHeight { get; set; } = 80f;
     public float CloudDrift { get; set; } = 1.2f;
 
-    // Dateiname aus der Zeit vor der Engine-Trennung — beibehalten, damit vorhandene
-    // Einstellungen nicht stillschweigend auf die Defaults zurückfallen
+    // File name from before the engine split; kept so existing settings do not silently fall
+    // back to the defaults
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Terraformer", "debug-settings.json");
@@ -67,7 +67,7 @@ public sealed class EngineSettings
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
-            // Unlesbare/kaputte Datei → mit Defaults weiterspielen statt crashen
+            // Unreadable or broken file: carry on with the defaults instead of crashing
         }
 
         return new EngineSettings();
@@ -82,7 +82,7 @@ public sealed class EngineSettings
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Speichern ist Komfort — das Spiel läuft auch ohne weiter
+            // Saving is a convenience; the game runs fine without it
         }
     }
 

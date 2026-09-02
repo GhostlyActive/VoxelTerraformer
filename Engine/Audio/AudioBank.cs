@@ -3,14 +3,13 @@ using Raylib_cs;
 namespace VoxelEngine.Audio;
 
 /// <summary>
-/// Die Sounds eines Spiels, angesprochen über einen Namen. Beim Anmelden wird zuerst im
-/// <c>Assets/Sounds</c>-Ordner des Spiels nach <c>&lt;name&gt;.wav</c> bzw. <c>.ogg</c> gesucht;
-/// fehlt die Datei, springt der synthetische Ersatzklang ein. Ein Spiel klingt dadurch auch
-/// ohne mitgelieferte Audiodateien, und eine später hinzugelegte Datei ersetzt den Ersatz,
-/// ohne dass sich Code ändert.
+/// A game's sounds, addressed by name. Registering one first looks for <c>&lt;name&gt;.wav</c> or
+/// <c>.ogg</c> in the game's <c>Assets/Sounds</c> folder; if the file is missing, the synthesized
+/// stand-in takes over. A game therefore has sound without shipping any audio files, and dropping
+/// a file in later replaces the stand-in without any code change.
 ///
-/// Jeder Sound hält mehrere Stimmen (Aliase), damit sich zwei Einschläge überlagern können,
-/// statt einander abzuschneiden.
+/// Each sound holds several voices (aliases) so two impacts can overlap instead of cutting each
+/// other off.
 /// </summary>
 public sealed class AudioBank : IDisposable
 {
@@ -26,7 +25,7 @@ public sealed class AudioBank : IDisposable
     private readonly Dictionary<string, Entry> _entries = new();
     private readonly string _soundDirectory;
 
-    /// <summary>False, wenn das Audiogerät nicht bereitsteht — alle Aufrufe laufen dann ins Leere</summary>
+    /// <summary>False when the audio device is not available; every call then does nothing</summary>
     public bool Available { get; }
 
     public AudioBank(string soundDirectory)
@@ -35,7 +34,7 @@ public sealed class AudioBank : IDisposable
         Available = Raylib.IsAudioDeviceReady();
     }
 
-    /// <summary>Sound anmelden: Datei aus dem Sounds-Ordner, sonst der synthetische Ersatz</summary>
+    /// <summary>Register a sound: the file from the sounds folder, else the synthesized stand-in</summary>
     public void Define(string name, SfxShape fallback)
     {
         if (!Available || _entries.ContainsKey(name)) return;
@@ -62,7 +61,7 @@ public sealed class AudioBank : IDisposable
         Raylib.PlaySound(voice);
     }
 
-    /// <summary>Lautstärke nach Entfernung: nah voll, ab <paramref name="range"/> still</summary>
+    /// <summary>Volume by distance: full up close, silent from <paramref name="range"/> on</summary>
     public void PlayAt(string name, float distance, float range, float volume = 1f, float pitch = 1f)
     {
         float attenuation = 1f - Math.Clamp(distance / MathF.Max(range, 0.01f), 0f, 1f);

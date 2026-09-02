@@ -5,8 +5,8 @@ using VoxelEngine.World;
 namespace VoxelEngine.Effects;
 
 /// <summary>
-/// Kleine Würfel-Partikel für Abbau-/Platzier-Effekte. Bewusst simpel:
-/// Schwerkraft, Boden-Bounce gegen die Voxelwelt, Schrumpfen am Lebensende.
+/// Small cube particles for digging and building effects. Deliberately simple: gravity, a bounce
+/// off the voxel world, and shrinking at the end of their life.
 /// </summary>
 public sealed class ParticleSystem
 {
@@ -19,10 +19,10 @@ public sealed class ParticleSystem
         public float Size;
         public Color Color;
 
-        /// <summary>Faktor auf die Schwerkraft: 1 = Trümmer, negativ = aufsteigender Rauch</summary>
+        /// <summary>Factor on gravity: 1 = debris, negative = rising smoke</summary>
         public float GravityScale;
 
-        /// <summary>Wächst der Partikel über seine Lebenszeit? (Rauch quillt auf)</summary>
+        /// <summary>Does the particle grow over its lifetime? (smoke billows out)</summary>
         public float Growth;
     }
 
@@ -32,8 +32,8 @@ public sealed class ParticleSystem
     private readonly Particle[] _particles = new Particle[MaxParticles];
     private int _count;
 
-    /// <summary>Aktuelles Weltlicht (0..~1) — wird beim Spawn in die Farbe eingebacken,
-    /// weil die Partikel über den unbeleuchteten Default-Shader laufen</summary>
+    /// <summary>Current world light (0..~1), baked into the colour on spawn because particles run
+    /// through the unlit default shader</summary>
     public float LightScale { get; set; } = 1f;
 
     public int ActiveParticles => _count;
@@ -59,7 +59,7 @@ public sealed class ParticleSystem
     {
         for (int i = 0; i < 10; i++)
         {
-            // flacher Ring nach außen — dezentes "Pop" beim Setzen
+            // a flat ring outwards: a small pop when a block goes down
             float angle = RandomRange(0f, MathF.Tau);
             var direction = new Vector3(MathF.Cos(angle), 0.25f, MathF.Sin(angle));
             Spawn(new Particle
@@ -74,7 +74,7 @@ public sealed class ParticleSystem
         }
     }
 
-    /// <summary>Aufsteigender Voxelrauch, z. B. hinter einem Raketentriebwerk</summary>
+    /// <summary>Rising voxel smoke, for instance behind a rocket engine</summary>
     public void SpawnSmoke(Vector3 origin, Vector3 drift, int count, float scale = 1f)
     {
         for (int i = 0; i < count; i++)
@@ -89,13 +89,35 @@ public sealed class ParticleSystem
                 MaxLife = RandomRange(1.1f, 2.4f),
                 Size = RandomRange(0.22f, 0.5f) * scale,
                 Color = new Color(grey, grey, (byte)Math.Min(255, grey + 6), (byte)255),
-                GravityScale = RandomRange(-0.12f, -0.03f), // Rauch steigt statt zu fallen
+                GravityScale = RandomRange(-0.12f, -0.03f), // smoke rises instead of falling
                 Growth = RandomRange(0.8f, 1.8f),
             });
         }
     }
 
-    /// <summary>Explosion: heller Feuerkern, Rauchwolke und geworfene Trümmer in Geländefarbe</summary>
+    /// <summary>
+    /// Short-lived spark behind a projectile. Keeps its colour instead of picking up the world
+    /// light: a glowing round is its own light source.
+    /// </summary>
+    public void SpawnTrail(Vector3 origin, Vector3 drift, Color color, float size, int count = 1)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            Vector3 direction = RandomDirection();
+            Spawn(new Particle
+            {
+                Position = origin + direction * size * 0.4f,
+                Velocity = drift + direction * RandomRange(0.5f, 2f),
+                MaxLife = RandomRange(0.2f, 0.5f),
+                Size = size * RandomRange(0.5f, 1f),
+                Color = color,
+                GravityScale = 0f,
+                Growth = -0.5f,
+            });
+        }
+    }
+
+    /// <summary>Explosion: a bright core of fire, a cloud of smoke and debris in terrain colours</summary>
     public void SpawnExplosion(Vector3 center, Color debris, float power)
     {
         for (int i = 0; i < 40; i++)
@@ -133,8 +155,8 @@ public sealed class ParticleSystem
     }
 
     /// <summary>
-    /// Ohne Welt (<paramref name="world"/> null) entfällt der Boden-Bounce — im Weltraum
-    /// gibt es nichts, worauf Trümmer aufschlagen könnten.
+    /// Without a world (<paramref name="world"/> null) the ground bounce is skipped: in space
+    /// there is nothing for debris to land on.
     /// </summary>
     public void Update(VoxelWorld? world, float dt)
     {
@@ -152,7 +174,7 @@ public sealed class ParticleSystem
             p.Velocity.Y -= Gravity * p.GravityScale * dt;
             p.Position += p.Velocity * dt;
 
-            // Boden-Bounce gegen die Voxelwelt (bewusst nur nach unten geprüft)
+            // Bounce off the voxel world (deliberately only checked downwards)
             if (world != null && p.Velocity.Y < 0f && p.GravityScale > 0f)
             {
                 float half = p.Size * 0.5f;
@@ -177,7 +199,7 @@ public sealed class ParticleSystem
         {
             ref readonly Particle p = ref _particles[i];
 
-            // im letzten Viertel der Lebenszeit schrumpfen statt hart verschwinden
+            // shrink over the last quarter of the lifetime instead of vanishing outright
             float shrink = Math.Min(1f, p.Life / (0.25f * p.MaxLife));
             float age = 1f - p.Life / p.MaxLife;
             float size = p.Size * shrink * (1f + p.Growth * age);
@@ -205,7 +227,7 @@ public sealed class ParticleSystem
 
     private static Vector3 RandomDirection()
     {
-        // Rejection Sampling: gleichverteilte Richtung ohne Häufung an den Polen
+        // Rejection sampling: an evenly distributed direction without clustering at the poles
         while (true)
         {
             var v = new Vector3(

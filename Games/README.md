@@ -1,44 +1,43 @@
 # Games
 
-Ein Spiel ist ein Ordner. Die Engine (`Engine/`, Assembly `VoxelEngine`) kennt keines davon —
-sie stellt Welt, Rendering, Steuerung, Menüs und Audio bereit, die Spiele setzen darauf auf.
+A game is a folder. The engine (`Engine/`, assembly `VoxelEngine`) knows about none of them — it
+provides the world, rendering, controls, menus and audio, and the games build on top.
 
 ```
 Games/<Id>/
-  Scripts/          C#-Dateien des Spiels
+  Scripts/          the game's C# files
   Assets/
-    Sounds/         .wav, .ogg oder .mp3, benannt nach dem Sound-Namen im Code
+    Sounds/         .wav, .ogg or .mp3, named after the sound name used in code
 ```
 
-`<Id>` ist zugleich der Ordnername im Ausgabeverzeichnis: `Context.AssetPath("Sounds/boom.wav")`
-zeigt auf `Games/<Id>/Assets/Sounds/boom.wav`.
+`<Id>` is also the folder name in the output directory: `Context.AssetPath("Sounds/boom.wav")`
+points at `Games/<Id>/Assets/Sounds/boom.wav`.
 
-## Ein neues Spiel anlegen
+## Adding a game
 
-1. Ordner `Games/MeinSpiel/Scripts/` anlegen.
-2. Klasse von `VoxelEngine.Core.Game` ableiten (`Load`, `Update`, `DrawWorld`, `Camera`).
-3. In `Program.cs` eine Zeile ergänzen:
+1. Create `Games/MyGame/Scripts/`.
+2. Derive a class from `VoxelEngine.Core.Game` (`Load`, `Update`, `DrawWorld`, `Camera`).
+3. Add one line to `Program.cs`:
 
 ```csharp
-registry.Add("MeinSpiel", "Mein Spiel", "Kurzbeschreibung", () => new MeinSpielGame());
+registry.Add("MyGame", "My Game", "Short description", () => new MyGame());
 ```
 
-Danach steht es im ESC-Menü unter **Games**.
+It then shows up in the ESC menu under **Games**.
 
 ## Sounds
 
-Jedes Spiel meldet seine Sounds in `Load` an:
+Every game registers its sounds in `Load`:
 
 ```csharp
 Context.Audio.Define("explosion", SfxShape.Explosion);
 ```
 
-Liegt `Assets/Sounds/explosion.wav` vor, wird die Datei benutzt. Fehlt sie, erzeugt die Engine
-aus der übergebenen `SfxShape` einen synthetischen Ersatzklang — ein Spiel klingt also auch
-ohne mitgelieferte Audiodateien, und eine später hinzugelegte Datei ersetzt den Ersatz, ohne
-dass sich Code ändert.
+If `Assets/Sounds/explosion.wav` exists, the file is used. If it does not, the engine synthesizes a
+stand-in from the `SfxShape` you passed — so a game has sound without shipping any audio files, and
+dropping a file in later replaces the stand-in without a code change.
 
-| Spiel | erwartete Dateien |
+| Game | expected files |
 | --- | --- |
 | `RocketStorm` | `launch`, `explosion`, `hit` |
 | `SolarSystem` | `shot`, `impact`, `bump` |

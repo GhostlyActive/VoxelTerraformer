@@ -1,17 +1,17 @@
 namespace VoxelEngine.World;
 
 /// <summary>
-/// Die drei Voxel-Stufen. Alle arbeiten auf denselben Weltdaten, das Umschalten ist verlustfrei:
-/// nur Werkzeug und Darstellung ändern sich, nicht die gespeicherte Geometrie.
+/// The three voxel modes. All of them work on the same world data, so switching is lossless:
+/// only the tool and the look change, never the stored geometry.
 /// </summary>
 public enum TerrainMode
 {
-    /// <summary>Ganze Blöcke setzen/entfernen, kantige Darstellung</summary>
+    /// <summary>Place and remove whole blocks, hard-edged look</summary>
     Blocks,
 
-    /// <summary>Kugel-Brush auf Sub-Voxel-Ebene, kantige Darstellung</summary>
+    /// <summary>Sphere brush at sub-voxel level, hard-edged look</summary>
     Sculpt,
 
-    /// <summary>Kugel-Brush auf Sub-Voxel-Ebene, geglättete Marching-Cubes-Oberfläche</summary>
+    /// <summary>Sphere brush at sub-voxel level, smoothed marching-cubes surface</summary>
     Smooth,
 }

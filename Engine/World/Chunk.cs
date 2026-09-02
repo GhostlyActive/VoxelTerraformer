@@ -9,15 +9,15 @@ public class Chunk
     // Layout: x + Size * (z + Size * y)
     private readonly byte[] _blocks;
 
-    // Sculpt-/Smooth-Modus: Sub-Voxel-Dichtefeld je bearbeitetem Block (Key = Index).
-    // Invarianten: Luft hat keinen Eintrag, ein volles Feld wird nicht gespeichert (= Vollblock).
-    // Die Felder sind Copy-on-Write — nie in-place ändern (Worker-Threads lesen sie).
+    // Sculpt and Smooth mode: one sub-voxel density field per edited block (key = index).
+    // Invariants: air has no entry, and a full field is not stored (it is a full block).
+    // The fields are copy-on-write: never change them in place, worker threads read them.
     private readonly Dictionary<int, byte[]> _refinements;
 
     public readonly ChunkCoord Coord;
     public readonly Vector3 WorldPosition;
 
-    /// <summary>True, sobald der Chunk seit Generierung/Laden verändert wurde → muss gespeichert werden</summary>
+    /// <summary>True once the chunk changed since it was generated or loaded, so it needs saving</summary>
     public bool Modified { get; private set; }
 
     public Chunk(ChunkCoord coord, int worldHeight, ITerrainGenerator generator)
@@ -30,7 +30,7 @@ public class Chunk
         generator.Generate(coord, _blocks, worldHeight);
     }
 
-    /// <summary>Chunk aus einem Spielstand — das Gelände kommt aus der Datei, nicht aus dem Generator</summary>
+    /// <summary>Chunk from a save: the terrain comes from the file, not from the generator</summary>
     public Chunk(ChunkCoord coord, byte[] loadedBlocks, Dictionary<int, byte[]> loadedRefinements)
     {
         Coord = coord;
@@ -39,7 +39,7 @@ public class Chunk
         _refinements = loadedRefinements;
     }
 
-    // Direkter Zugriff nur für Speichern/Laden — nicht aus Gameplay-Code verwenden
+    // Direct access for saving and loading only; do not use from gameplay code
     internal byte[] RawBlocks => _blocks;
 
     internal void MarkSaved() => Modified = false;
@@ -55,7 +55,7 @@ public class Chunk
         if (!InBounds(x, y, z, worldHeight)) return;
         int index = Index(x, y, z);
         _blocks[index] = (byte)Math.Clamp(id, 0, 255);
-        _refinements.Remove(index); // Blockwechsel verwirft das Dichtefeld
+        _refinements.Remove(index); // changing the block discards its density field
         Modified = true;
     }
 
@@ -87,7 +87,7 @@ public class Chunk
         return (x, y, z);
     }
 
-    // Kopiert eine komplette X-Zeile am Stück (für den Mesh-Snapshot)
+    // Copies a whole X row in one go (for the mesh snapshot)
     public void CopyRow(int y, int z, byte[] destination, int destinationIndex)
         => Array.Copy(_blocks, Index(0, y, z), destination, destinationIndex, Size);
 

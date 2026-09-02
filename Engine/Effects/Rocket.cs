@@ -4,9 +4,9 @@ using System.Numerics;
 namespace VoxelEngine.Effects;
 
 /// <summary>
-/// Flugkörper auf gescripteter Bahn (quadratische Bézier): Start, Scheitel und Aufschlag stehen
-/// beim Abschuss fest, der Einschlagpunkt ist dadurch planbar. Der Körper besteht aus Würfeln,
-/// kippt in Flugrichtung und zieht eine Rauchfahne hinter sich her.
+/// A projectile on a scripted path (quadratic Bézier): launch, apex and impact are fixed the
+/// moment it fires, which makes the point of impact predictable. The body is built from cubes,
+/// tips into the direction of travel and trails smoke behind it.
 /// </summary>
 public sealed class Rocket
 {
@@ -20,13 +20,13 @@ public sealed class Rocket
     public Vector3 Position { get; private set; }
     public Vector3 Direction { get; private set; } = Vector3.UnitY;
 
-    /// <summary>Aufschlag erreicht — der Aufrufer löst dann die Explosion aus</summary>
+    /// <summary>Impact reached; the caller then triggers the explosion</summary>
     public bool Landed => _elapsed >= _flightSeconds;
 
-    /// <summary>Farbe von Spitze und Finnen — unterscheidet Raketentypen im Bild</summary>
+    /// <summary>Colour of the nose and fins; tells rocket types apart on screen</summary>
     public Color Accent { get; init; } = new(214, 78, 62, 255);
 
-    /// <summary>Länge des Körpers in Metern; alles andere skaliert mit</summary>
+    /// <summary>Length of the body in metres; everything else scales with it</summary>
     public float Scale { get; init; } = 1f;
 
     public Rocket(Vector3 start, Vector3 apex, Vector3 target, float flightSeconds)
@@ -35,7 +35,7 @@ public sealed class Rocket
         _target = target;
         _flightSeconds = flightSeconds;
 
-        // Kontrollpunkt so, dass die Kurve tatsächlich durch den gewünschten Scheitel läuft
+        // Control point chosen so the curve actually passes through the requested apex
         _control = 2f * apex - 0.5f * start - 0.5f * target;
 
         Position = start;
@@ -56,7 +56,7 @@ public sealed class Rocket
         Vector3 delta = Position - previous;
         if (delta.LengthSquared() > 1e-6f) Direction = Vector3.Normalize(delta);
 
-        // Rauch sitzt am Heck und bekommt einen Rückstoß entgegen der Flugrichtung
+        // Smoke sits at the tail and is pushed back against the direction of travel
         Vector3 nozzle = Position - Direction * (0.9f * Scale);
         particles.SpawnSmoke(nozzle, -Direction * 3.5f, 3, Scale);
     }
@@ -65,7 +65,7 @@ public sealed class Rocket
     {
         if (Landed) return;
 
-        // Um die Flugrichtung drehen: Standardachse des Körpers ist +Y
+        // Rotate into the direction of travel; the body's own axis is +Y
         Vector3 axis = Vector3.Cross(Vector3.UnitY, Direction);
         float angle = MathF.Acos(Math.Clamp(Vector3.Dot(Vector3.UnitY, Direction), -1f, 1f)) * (180f / MathF.PI);
         if (axis.LengthSquared() < 1e-6f) axis = Vector3.UnitX;
@@ -79,7 +79,7 @@ public sealed class Rocket
         Raylib.DrawCubeV(new Vector3(0f, 1.05f, 0f), new Vector3(0.42f, 0.5f, 0.42f), Accent);
         Raylib.DrawCubeV(new Vector3(0f, -0.95f, 0f), new Vector3(0.34f, 0.3f, 0.34f), new Color(90, 96, 110, 255));
 
-        // Finnen
+        // Fins
         Raylib.DrawCubeV(new Vector3(0.42f, -0.6f, 0f), new Vector3(0.3f, 0.5f, 0.12f), Accent);
         Raylib.DrawCubeV(new Vector3(-0.42f, -0.6f, 0f), new Vector3(0.3f, 0.5f, 0.12f), Accent);
         Raylib.DrawCubeV(new Vector3(0f, -0.6f, 0.42f), new Vector3(0.12f, 0.5f, 0.3f), Accent);

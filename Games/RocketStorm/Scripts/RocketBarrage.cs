@@ -7,9 +7,9 @@ using VoxelEngine.Scenes;
 namespace Terraformer.Games.RocketStorm;
 
 /// <summary>
-/// Der Angriff: Wellen von Raketen, die vom Horizont aus im Bogen auf den Spieler zufliegen.
-/// Jede kündigt ihren Einschlag mit einem Ring auf dem Boden an — der Ring zieht sich zusammen,
-/// bis die Rakete da ist. Mit jeder Welle fliegen mehr Raketen und die Abstände werden kürzer.
+/// The attack: waves of rockets that arc in on the player from the horizon. Each one announces
+/// its impact with a ring on the ground that contracts until the rocket arrives. Every wave sends
+/// more of them, with shorter gaps in between.
 /// </summary>
 public sealed class RocketBarrage
 {
@@ -18,7 +18,7 @@ public sealed class RocketBarrage
     private const float LaunchDistance = 120f;
     private const float WavePause = 4.5f;
 
-    /// <summary>Radius des Kraters — zugleich die Zone, in der ein Treffer voll durchschlägt</summary>
+    /// <summary>Crater radius, and with it the zone where a hit lands at full force</summary>
     public const float CraterRadius = 4.5f;
 
     private sealed class Incoming
@@ -40,7 +40,7 @@ public sealed class RocketBarrage
 
     public int InFlight => _live.Count;
 
-    /// <summary>Sekunden bis zur nächsten Welle; 0, solange eine läuft</summary>
+    /// <summary>Seconds until the next wave; 0 while one is running</summary>
     public float WaveBreak => _waveBreak;
 
     public RocketBarrage(VoxelTerrainScene scene, AudioBank audio)
@@ -78,7 +78,7 @@ public sealed class RocketBarrage
     {
         if (_remainingInWave <= 0)
         {
-            // Zwischen den Wellen bleibt Zeit, sich einzugraben
+            // The gap between waves is the time you get to dig in
             if (_live.Count > 0) return;
 
             _waveBreak -= dt;
@@ -103,7 +103,7 @@ public sealed class RocketBarrage
 
     private void Launch(Vector3 target)
     {
-        // Einschlag streuen: manche sitzen direkt auf dem Spieler, andere sind Warnschüsse
+        // Spread the impacts: some land right on the player, others are warning shots
         float angle = Random.Shared.NextSingle() * MathF.Tau;
         float spread = 2f + Random.Shared.NextSingle() * (6f + Wave);
         var offset = new Vector3(MathF.Cos(angle) * spread, 0f, MathF.Sin(angle) * spread);
@@ -141,7 +141,7 @@ public sealed class RocketBarrage
         }
     }
 
-    /// <summary>Zielring: zieht sich auf den Einschlagpunkt zusammen und blinkt zum Schluss schneller</summary>
+    /// <summary>Target ring: contracts onto the impact point and blinks faster towards the end</summary>
     private static void DrawMarker(Incoming incoming)
     {
         float progress = 1f - incoming.TimeLeft / FlightSeconds;

@@ -8,11 +8,14 @@ using VoxelEngine.World;
 namespace Terraformer.Games.FreeWalk;
 
 /// <summary>
-/// Die Sandbox: eine endlose Voxelwelt ohne Ziel und ohne Gegner. Bauen, graben, zwischen den
-/// drei Voxel-Stufen wechseln, an den Reglern drehen. Das Spiel, mit dem das Projekt startet.
+/// The sandbox: an endless voxel world with no goal and no enemies. Build, dig, switch between
+/// the three voxel modes, turn the dials. The game the project opens with.
 /// </summary>
 public sealed class FreeWalkGame : Game
 {
+    /// <summary>Sun pinned at its highest point: even light, and no night to sit through</summary>
+    private const float NoonAngle = 90f;
+
     private VoxelTerrainScene _scene = null!;
 
     public override Camera3D Camera => _scene.Camera;
@@ -24,17 +27,19 @@ public sealed class FreeWalkGame : Game
         "WASD + mouse: walk and look, Shift sprints, Space jumps",
         "LMB / RMB: remove and place (hold them in Sculpt and Smooth)",
         "Wheel: build reach | Ctrl+Wheel: brush size",
-        "V: voxel mode | Z/U: day speed | M: tuning | F3: debug",
+        "V: voxel mode | Z/U: move the sun | M: tuning | F3: debug",
     };
 
     public override void Load()
     {
         _scene = new VoxelTerrainScene(Context.Settings, new VoxelTerrainOptions
         {
-            // Historischer Ordnername: bestehende Spielstände bleiben so lesbar
+            // Historic folder name, so existing saves stay readable
             SaveSlot = "world",
             Spawn = new Vector3(128, 60, 128),
             Mode = TerrainMode.Blocks,
+            RunDayNight = false,
+            SunAngleDegrees = NoonAngle,
         });
     }
 
@@ -55,8 +60,8 @@ public sealed class FreeWalkGame : Game
     public override void DrawHud()
     {
         Hud.Text("WASD move | Shift sprint | Space jump | LMB remove | RMB place | V mode", 10, 40, 20, Color.Black);
-        Hud.Text("Wheel: reach | Ctrl+Wheel: brush | Z/U day | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
-        Hud.Text(_scene.DayNight.SpeedLabel, 10, 90, 20, Color.Black);
+        Hud.Text("Wheel: reach | Ctrl+Wheel: brush | Z/U sun | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
+        Hud.Text(_scene.DayNight.SunLabel, 10, 90, 20, Color.Black);
 
         if (Context.DebugOverlay)
         {

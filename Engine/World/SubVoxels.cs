@@ -1,30 +1,30 @@
 namespace VoxelEngine.World;
 
 /// <summary>
-/// Dichtefeld eines bearbeiteten Blocks: 8 Teilungen pro Achse = 512 Zellen à 12,5 cm,
-/// je ein Byte Füllgrad (0 = Luft, 255 = massiv). Ab <see cref="Iso"/> gilt eine Zelle
-/// als fest — daran hängen Kollision, Raycast und die kantigen Modi. Marching Cubes nutzt
-/// zusätzlich die Zwischenwerte und zieht die Fläche exakt dort, wo der Füllgrad Iso
-/// kreuzt; daher die runden Formen im Smooth-Modus.
-/// Ein Vollblock entspricht dem vollen Feld, Luft dem leeren — gespeichert wird ein Feld
-/// nur für tatsächlich bearbeitete Blöcke. Felder sind Copy-on-Write: einmal im Chunk
-/// abgelegt, werden sie nie mehr mutiert (Worker-Threads lesen sie).
+/// The density field of an edited block: 8 divisions per axis = 512 cells of 12.5 cm, one byte of
+/// fill each (0 = air, 255 = solid). From <see cref="Iso"/> upwards a cell counts as solid, which
+/// is what collision, raycasting and the hard-edged modes hang off. Marching cubes also uses the
+/// values in between and puts the surface exactly where the fill crosses Iso, which is where the
+/// rounded shapes in Smooth mode come from.
+/// A full block equals a full field and air an empty one, so a field is only stored for blocks
+/// that were actually edited. Fields are copy-on-write: once handed to a chunk they are never
+/// mutated again, because worker threads read them.
 /// </summary>
 public static class SubVoxels
 {
-    // Divisions muss eine Zweierpotenz bleiben (Shift = log2, LowMask = Divisions-1)
+    // Divisions has to stay a power of two (Shift = log2, LowMask = Divisions-1)
     public const int Divisions = 8;
     public const int Shift = 3;
     public const int LowMask = Divisions - 1;
     public const float CellSize = 1f / Divisions;
     public const int CellCount = Divisions * Divisions * Divisions;
 
-    /// <summary>Ab diesem Füllgrad ist eine Zelle fest — derselbe Schwellwert, den Marching Cubes als Fläche zieht</summary>
+    /// <summary>From this fill upwards a cell is solid: the same threshold marching cubes draws the surface at</summary>
     public const byte Iso = 128;
 
     /// <summary>
-    /// Füllgrade darunter werden auf 0 gerundet. Ohne das bliebe vom weichen Pinselrand
-    /// überall ein Hauch Dichte stehen und ausgehöhlte Blöcke würden nie wieder zu Luft.
+    /// Fills below this are rounded down to 0. Without it, a trace of density from the soft brush
+    /// edge would linger everywhere and hollowed-out blocks would never become air again.
     /// </summary>
     public const byte Epsilon = 6;
 
@@ -66,7 +66,7 @@ public static class SubVoxels
         return field;
     }
 
-    /// <summary>Ist die Randschicht Richtung faceIndex durchgehend fest? (Face-Reihenfolge des Meshers: +Y,-Y,+X,-X,+Z,-Z; opposite(f) == f ^ 1)</summary>
+    /// <summary>Is the border layer towards faceIndex solid all the way? (mesher face order: +Y,-Y,+X,-X,+Z,-Z; opposite(f) == f ^ 1)</summary>
     public static bool LayerFull(byte[] field, int faceIndex)
     {
         foreach (int cell in _faceLayers[faceIndex])
