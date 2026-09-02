@@ -169,22 +169,34 @@ public sealed class ChunkMeshManager : IDisposable
         for (int z = 0; z < Chunk.Size; z++)
             chunk.CopyRow(y, z, padded, ChunkMesher.Index(0, y, z));
 
-        // A one-voxel shell from the world (neighbouring chunks), for face culling and AO at the borders
+        // A one-voxel shell from the world (neighbouring chunks), for face culling and AO at the
+        // borders. Only the shell cells are visited: walking the full padded volume and skipping
+        // the interior costs seven times as much, and this runs on the main thread for every job.
         for (int y = -1; y <= worldHeight; y++)
-        for (int z = -1; z <= Chunk.Size; z++)
-        for (int x = -1; x <= Chunk.Size; x++)
         {
-            bool inside = x >= 0 && x < Chunk.Size && z >= 0 && z < Chunk.Size && y >= 0 && y < worldHeight;
-            if (inside) continue;
+            bool yShell = y < 0 || y >= worldHeight;
 
-            // Below the world counts as solid, so the never-visible underside produces no mesh
-            padded[ChunkMesher.Index(x, y, z)] = y < 0
-                ? BlockRegistry.Terrain
-                : (byte)_world.GetBlock(baseX + x, y, baseZ + z);
+            for (int z = -1; z <= Chunk.Size; z++)
+            {
+                if (yShell || z < 0 || z >= Chunk.Size)
+                {
+                    for (int x = -1; x <= Chunk.Size; x++)
+                        padded[ChunkMesher.Index(x, y, z)] = ShellBlock(baseX + x, y, baseZ + z);
+
+                    continue;
+                }
+
+                padded[ChunkMesher.Index(-1, y, z)] = ShellBlock(baseX - 1, y, baseZ + z);
+                padded[ChunkMesher.Index(Chunk.Size, y, z)] = ShellBlock(baseX + Chunk.Size, y, baseZ + z);
+            }
         }
 
         return padded;
     }
+
+    /// <summary>Below the world counts as solid, so the never-visible underside produces no mesh</summary>
+    private byte ShellBlock(int worldX, int worldY, int worldZ)
+        => worldY < 0 ? BlockRegistry.Terrain : (byte)_world.GetBlock(worldX, worldY, worldZ);
 
     // The chunk's sub-voxel density fields (rekeyed to padded indices) plus those of the directly
     // adjacent neighbour blocks, for sub-voxel culling at the chunk borders

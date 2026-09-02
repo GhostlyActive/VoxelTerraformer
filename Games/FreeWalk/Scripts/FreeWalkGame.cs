@@ -51,7 +51,7 @@ public sealed class FreeWalkGame : Game
         _scene.Update(dt);
     }
 
-    public override void UpdateWhilePaused() => _scene.PumpMeshUploads();
+    public override void UpdateAlways() => _scene.PumpMeshUploads();
 
     public override void DrawBackground() => _scene.DrawBackground();
 

@@ -38,6 +38,8 @@ public sealed class CelestialBody
     /// <summary>Material that must not be hit: reaching it sets the whole body off</summary>
     public byte VolatileCore { get; init; } = BlockRegistry.Air;
 
+    public bool HasVolatileCore => VolatileCore != BlockRegistry.Air;
+
     /// <summary>Blown apart: no longer drawn, no longer hit, but its moons keep their orbits</summary>
     public bool Destroyed { get; private set; }
 

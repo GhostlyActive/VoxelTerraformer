@@ -55,14 +55,24 @@ public class VoxelWorld
     private bool _hasBuildFront;
     private Vector3 _buildFront;
     private bool _rayHadHit;
+    private float _rayLastDistance;
+
+    // Where the brush actually bites. While adding, that trails the crosshair, and drawing the
+    // preview at the crosshair instead would show the sphere somewhere the material never appears.
+    private Vector3 _previewCenter;
 
     // The brush sphere and the block outline get in the way while building, so they only appear
     // briefly after a size change (wheel) and permanently while the debug overlay is on
     private float _previewTimer;
 
     private const float StrokeStepFactor = 0.5f;    // stamp spacing as a fraction of the radius
-    private const float StrokeMaxJump = 6f;         // beyond this the target jumped, no hand moved
-    private const int StrokeMaxStamps = 12;
+    private const int StrokeMaxStamps = 64;         // work budget for one frame of a fast stroke
+
+    // A stroke is only broken when the target changes *depth*, which means the ray slid off an
+    // edge onto something far away. Sideways speed, however high, is a hand movement and has to
+    // draw a continuous line.
+    private const float DepthJumpMeters = 1.5f;
+    private const float DepthJumpFraction = 0.35f;
     private const float BuildMaxLag = 1.5f;         // how far the build front may lag, in radii
     private const float SculptParticleInterval = 0.07f;
 
@@ -312,10 +322,10 @@ public class VoxelWorld
         float radius = _sculptRadiusForDraw * pulse;
 
         Raylib.BeginBlendMode(BlendMode.Alpha);
-        Raylib.DrawSphere(_sculptTarget, radius, Fade(tint, (active ? 60 : 34) / 255f * visibility));
+        Raylib.DrawSphere(_previewCenter, radius, Fade(tint, (active ? 60 : 34) / 255f * visibility));
         Raylib.EndBlendMode();
 
-        Raylib.DrawSphereWires(_sculptTarget, radius, 12, 12, Fade(tint, (active ? 200 : 150) / 255f * visibility));
+        Raylib.DrawSphereWires(_previewCenter, radius, 12, 12, Fade(tint, (active ? 200 : 150) / 255f * visibility));
     }
 
     // --- Sculpt-Modus ---
@@ -350,10 +360,17 @@ public class VoxelWorld
             _sculptTarget = ray.Position + Vector3.Normalize(ray.Direction) * buildReach;
         }
         _hasSculptTarget = true;
+        _previewCenter = _sculptTarget;
 
-        // Track whether the ray hits every frame, button held or not
-        bool rayJumped = hit.HasHit != _rayHadHit;
+        // Track the target's depth every frame, button held or not. Digging and building move the
+        // surface by at most a brush radius per frame, so only a real edge trips the threshold.
+        float hitDistance = hit.HasHit ? hit.Distance / SubVoxels.Divisions : buildReach;
+        bool rayJumped =
+            hit.HasHit != _rayHadHit ||
+            MathF.Abs(hitDistance - _rayLastDistance) > MathF.Max(DepthJumpMeters, hitDistance * DepthJumpFraction);
+
         _rayHadHit = hit.HasHit;
+        _rayLastDistance = hitDistance;
 
         bool carve = Raylib.IsMouseButtonDown(MouseButton.Left);
         bool build = Raylib.IsMouseButtonDown(MouseButton.Right);
@@ -376,21 +393,18 @@ public class VoxelWorld
         // a soft falloff, which is what marching cubes turns into a rounded surface
         float edge = Mode == TerrainMode.Smooth ? sculptRadius * _settings.BrushSoftness : 0f;
 
-        // When the ray flips between hit and empty, the target jumps metres without the hand doing
-        // anything: start over there, otherwise the front drags a tube through mid-air behind it.
-        // Hand movement alone, by contrast, just lets it fall behind.
-        if (add && rayJumped)
-        {
-            _hasBuildFront = false;
-            _stroking = false;
-        }
+        // The target jumped to another surface without the hand doing anything: start over there,
+        // otherwise the stroke drags a tube across the gap in between.
+        if (rayJumped) _hasBuildFront = false;
 
         // Carving acts on the target immediately, since any lag gets in the way while digging.
         // Adding creeps towards it so the surface grows steadily instead of jumping by whole spheres.
         Vector3 point = add ? AdvanceBuildFront(_sculptTarget, sculptRadius, frameTime) : _sculptTarget;
         if (!add) _hasBuildFront = false;
 
-        bool changed = StampStroke(point, sculptRadius, add, edge, playerBounds);
+        _previewCenter = point;
+
+        bool changed = StampStroke(point, sculptRadius, add, edge, playerBounds, rayJumped);
 
         _strokePrevious = point;
         _stroking = true;
@@ -439,20 +453,24 @@ public class VoxelWorld
     /// would leave a string of beads when the mouse moves fast; overlapping spheres give a
     /// continuous tube instead.
     /// </summary>
-    private bool StampStroke(Vector3 target, float radius, bool add, float edge, BoundingBox playerBounds)
+    private bool StampStroke(Vector3 target, float radius, bool add, float edge, BoundingBox playerBounds, bool jumped)
     {
         bool changed = SculptBlob(target, radius, add, edge, BlockRegistry.Stone, playerBounds);
-        if (!_stroking) return changed;
+
+        // A jump means the two positions are on different surfaces; joining them would draw a
+        // bridge through the air that nobody asked for
+        if (!_stroking || jumped) return changed;
 
         Vector3 delta = target - _strokePrevious;
         float distance = delta.Length();
 
-        // Large jumps come from the raycast (the target flipping between a hit and the end of the
-        // reach), not from a hand movement, and must not draw a trail
         float step = radius * StrokeStepFactor;
-        if (distance < step || distance > radius * StrokeMaxJump) return changed;
+        if (distance < step) return changed;
 
+        // Past the budget the stamps spread out instead of the segment being dropped: a slightly
+        // coarser line still beats a hole in the stroke
         int stamps = Math.Min((int)(distance / step), StrokeMaxStamps);
+
         for (int i = 1; i <= stamps; i++)
         {
             Vector3 point = _strokePrevious + delta * (i / (float)(stamps + 1));

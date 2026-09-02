@@ -38,10 +38,11 @@ public abstract class Game
     public abstract void Update(float dt);
 
     /// <summary>
-    /// Runs while a menu is open as well. For work that must not stall, such as uploading
-    /// finished chunk meshes from the worker threads.
+    /// Runs every frame after <see cref="Update"/>, and also while a menu is open. For work that
+    /// must not stall and wants this frame's changes: uploading finished chunk meshes and queueing
+    /// the ones that just became dirty.
     /// </summary>
-    public virtual void UpdateWhilePaused() { }
+    public virtual void UpdateAlways() { }
 
     /// <summary>Sky or background, drawn before the scene</summary>
     public virtual void DrawBackground() => Raylib.ClearBackground(Color.Black);

@@ -12,7 +12,7 @@ namespace Terraformer.Games.SolarSystem;
 public sealed class DebrisField
 {
     /// <summary>Hard cap; the oldest chunk gives way to a new one</summary>
-    private const int MaxChunks = 320;
+    private const int MaxChunks = 1400;
 
     private const float Lifetime = 90f;
 
@@ -25,6 +25,10 @@ public sealed class DebrisField
         public float SpinSpeed;
         public float Size;
         public float Life;
+
+        /// <summary>Seconds during which the chunk ignores solid ground it is still inside of</summary>
+        public float Grace;
+
         public Color Color;
     }
 
@@ -44,6 +48,28 @@ public sealed class DebrisField
     {
         _chunks.Clear();
         _oldest = 0;
+    }
+
+    /// <summary>
+    /// One chunk with a velocity the caller worked out. Used by the core detonation, where the
+    /// rubble is the material the blast just removed and has to fly the way that material went.
+    ///
+    /// <paramref name="grace"/> keeps it from being swallowed by crust that the expanding shell has
+    /// not reached yet — without it most of a planet's rubble is absorbed the instant it spawns.
+    /// </summary>
+    public void SpawnAt(Vector3 position, Vector3 velocity, Color color, float size, float grace = 0f)
+    {
+        Add(new Chunk
+        {
+            Position = position,
+            Velocity = velocity,
+            SpinAxis = RandomDirection(),
+            SpinSpeed = 30f + Random.Shared.NextSingle() * 220f,
+            Size = size * (0.6f + Random.Shared.NextSingle() * 0.9f),
+            Life = Lifetime * (0.6f + Random.Shared.NextSingle() * 0.8f),
+            Grace = grace,
+            Color = color,
+        });
     }
 
     /// <summary>
@@ -67,15 +93,20 @@ public sealed class DebrisField
                 Color = color,
             };
 
-            if (_chunks.Count < MaxChunks)
-            {
-                _chunks.Add(chunk);
-                continue;
-            }
-
-            _chunks[_oldest] = chunk;
-            _oldest = (_oldest + 1) % MaxChunks;
+            Add(chunk);
         }
+    }
+
+    private void Add(Chunk chunk)
+    {
+        if (_chunks.Count < MaxChunks)
+        {
+            _chunks.Add(chunk);
+            return;
+        }
+
+        _chunks[_oldest] = chunk;
+        _oldest = (_oldest + 1) % MaxChunks;
     }
 
     /// <summary>
@@ -90,11 +121,12 @@ public sealed class DebrisField
             Chunk chunk = _chunks[i];
 
             chunk.Life -= dt;
+            chunk.Grace -= dt;
             chunk.Velocity += gravityAt(chunk.Position) * dt;
             chunk.Position += chunk.Velocity * dt;
             chunk.Spin += chunk.SpinSpeed * dt;
 
-            if (chunk.Life > 0f && !isInsideSolid(chunk.Position)) continue;
+            if (chunk.Life > 0f && (chunk.Grace > 0f || !isInsideSolid(chunk.Position))) continue;
 
             // Landed or burnt out: leave a small puff rather than blinking out
             _particles.SpawnExplosion(chunk.Position, chunk.Color, chunk.Size * 0.05f);

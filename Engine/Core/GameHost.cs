@@ -97,15 +97,18 @@ public sealed class GameHost : IDisposable
             bool paused = _pauseMenu.IsOpen || menuWasOpen;
             UpdateCursor(paused, smokeTest);
 
-            _game!.UpdateWhilePaused();
-
             if (!paused)
             {
                 if (Raylib.IsKeyPressed(KeyboardKey.F3)) DebugOverlay = !DebugOverlay;
 
                 _tuningMenu.Update();
-                _game.Update(dt);
+                _game!.Update(dt);
             }
+
+            // Deliberately after the gameplay step: this frame's edits are queued for meshing
+            // right away instead of waiting for the next frame, which halves the delay between
+            // carving something and seeing it
+            _game!.UpdateAlways();
 
             Raylib.BeginDrawing();
 

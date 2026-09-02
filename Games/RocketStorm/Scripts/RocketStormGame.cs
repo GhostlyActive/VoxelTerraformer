@@ -134,7 +134,7 @@ public sealed class RocketStormGame : Game
         _barrage.Reset();
     }
 
-    public override void UpdateWhilePaused() => _scene.PumpMeshUploads();
+    public override void UpdateAlways() => _scene.PumpMeshUploads();
 
     public override void DrawBackground() => _scene.DrawBackground();
 

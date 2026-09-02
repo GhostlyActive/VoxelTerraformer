@@ -12,6 +12,9 @@ namespace VoxelEngine.World;
 /// it touched to be remeshed. Without that, a planet of a hundred voxels across would rebuild a
 /// million voxels for every shot.
 /// </summary>
+/// <summary>Reports a voxel a carve took out: its centre in world space and the material that was there</summary>
+public delegate void VoxelRemoved(Vector3 worldPosition, byte block);
+
 public sealed class VoxelBody
 {
     /// <summary>Side length of one meshing sub-chunk; <see cref="Size"/> has to be a multiple of it</summary>
@@ -41,6 +44,9 @@ public sealed class VoxelBody
 
     /// <summary>Radius of the filled sphere in metres, set by <see cref="FillSphere"/></summary>
     public float SurfaceRadius { get; private set; }
+
+    /// <summary>Radius in metres below which only core material sits, set by <see cref="FillSphere"/></summary>
+    public float CoreRadius { get; private set; }
 
     /// <summary>Radius of the bounding sphere, for coarse hit tests and collision</summary>
     public float BoundingRadius => Size * 0.5f * MathF.Sqrt(3f) * VoxelScale;
@@ -102,6 +108,10 @@ public sealed class VoxelBody
     public Vector3 ToLocal(Vector3 worldPoint)
         => RotateY(worldPoint - Position, -Spin) / VoxelScale + _gridCenter;
 
+    /// <summary>A point in voxel coordinates back into the world</summary>
+    public Vector3 ToWorld(Vector3 localPoint)
+        => Position + RotateY((localPoint - _gridCenter) * VoxelScale, Spin);
+
     public bool IsSolidAt(Vector3 worldPoint)
     {
         Vector3 local = ToLocal(worldPoint);
@@ -122,8 +132,14 @@ public sealed class VoxelBody
     /// <summary>
     /// Same, but also counts how many voxels of <paramref name="watchMaterial"/> went with it —
     /// which is how a game notices that a shot has reached something that should not be touched.
+    ///
+    /// <paramref name="report"/> hands back every <paramref name="reportEvery"/>-th removed voxel,
+    /// so a caller can turn the material it just destroyed into flying rubble instead of inventing
+    /// debris out of nothing. Sampling matters: a planet-sized carve removes hundreds of thousands
+    /// of voxels and nobody wants a chunk for each.
     /// </summary>
-    public int Carve(Vector3 worldCenter, float worldRadius, byte watchMaterial, out int watchedRemoved)
+    public int Carve(Vector3 worldCenter, float worldRadius, byte watchMaterial, out int watchedRemoved,
+        VoxelRemoved? report = null, int reportEvery = 1)
     {
         Vector3 center = ToLocal(worldCenter);
         float radius = worldRadius / VoxelScale;
@@ -152,6 +168,8 @@ public sealed class VoxelBody
             _blocks[index] = BlockRegistry.Air;
             removed++;
             if (block == watchMaterial) watchedRemoved++;
+
+            if (report != null && removed % reportEvery == 0) report(ToWorld(voxelCenter), block);
         }
 
         if (removed > 0) MarkDirtyAround(minX, minY, minZ, maxX, maxY, maxZ);
@@ -175,6 +193,7 @@ public sealed class VoxelBody
     public void FillSphere(float radiusVoxels, byte crust, byte core, int seed, float roughness = 0.12f, int crustDepth = 4)
     {
         SurfaceRadius = radiusVoxels * VoxelScale;
+        CoreRadius = MathF.Max(0f, (radiusVoxels - crustDepth) * VoxelScale);
 
         // The noise frequency is tied to the grid, so a large body gets more surface detail rather
         // than the same handful of bumps stretched over it. Kept low enough that the result reads
@@ -204,9 +223,6 @@ public sealed class VoxelBody
 
         Array.Fill(_chunkDirty, true);
     }
-
-    /// <summary>Radius in metres below which only core material is left, for chain reactions</summary>
-    public float CoreRadius(int crustDepth) => MathF.Max(0f, SurfaceRadius - crustDepth * VoxelScale);
 
     // A voxel on a chunk border also changes the faces of the neighbouring chunk, so the range is
     // widened by one before it is converted to chunk indices

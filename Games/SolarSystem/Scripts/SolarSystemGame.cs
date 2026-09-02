@@ -35,10 +35,23 @@ public sealed class SolarSystemGame : Game
     /// </summary>
     private const int VolatileCrustDepth = 22;
 
-    private const float DetonationSeconds = 2.8f;
+    /// <summary>The crust caves into the breached core before anything is thrown outwards</summary>
+    private const float CollapseSeconds = 0.5f;
 
-    /// <summary>The detonation eats outwards in steps, because carving is a whole-volume sweep</summary>
-    private const int DetonationSteps = 9;
+    private const float BlastSeconds = 2.8f;
+    private const float DetonationSeconds = CollapseSeconds + BlastSeconds;
+
+    /// <summary>The blast eats outwards in shells, because carving is a whole-volume sweep</summary>
+    private const int DetonationSteps = 16;
+
+    /// <summary>Roughly one chunk of rubble per this many destroyed voxels</summary>
+    private const int VoxelsPerDebrisChunk = 420;
+
+    /// <summary>Radius factor and opacity of the fireball's shells, brightest at the heart</summary>
+    private static readonly (float Scale, float Alpha)[] _detonationShells =
+    {
+        (0.45f, 200f), (0.75f, 90f), (1.05f, 35f),
+    };
 
     /// <summary>
     /// Materials are registered once per process: <see cref="Game.Load"/> runs again on every
@@ -67,6 +80,7 @@ public sealed class SolarSystemGame : Game
     private FreeFlyController _ship = null!;
     private VoxelCannon _cannon = null!;
     private DebrisField _debris = null!;
+    private ShockwaveField _shockwaves = null!;
     private VoxelBodyRenderer _renderer = null!;
     private TerrainShader _shader = null!;
     private ParticleSystem _particles = null!;
@@ -102,6 +116,7 @@ public sealed class SolarSystemGame : Game
         _renderer = new VoxelBodyRenderer();
         _particles = new ParticleSystem();
         _debris = new DebrisField(_particles);
+        _shockwaves = new ShockwaveField();
         _stars = new StarField(fullSphere: true, distance: 160000f, starCount: 900);
 
         Context.Audio.Define("shot", SfxShape.Shot);
@@ -263,6 +278,7 @@ public sealed class SolarSystemGame : Game
 
         _cannon.Update(dt, TryHit);
         _debris.Update(dt, GravityAt, IsInsideSolid);
+        _shockwaves.Update(dt);
         _particles.Update(null, dt);
 
         KeepShipOutOfSolids();
@@ -334,8 +350,13 @@ public sealed class SolarSystemGame : Game
     }
 
     /// <summary>
-    /// A breached core eats its way outwards. Carving is a sweep over the whole grid, so it runs in
-    /// a handful of steps rather than every frame, and each step throws off rubble and fire.
+    /// A breached core takes the planet apart from the inside. First the crust falls inwards for
+    /// half a second, then a shell eats its way out: every step carves a larger sphere and hands
+    /// back a sample of the voxels it removed, which become the rubble flying away. The material
+    /// you see leaving is the material that was actually there.
+    ///
+    /// Carving is a sweep over the whole grid, so it runs in a handful of steps rather than every
+    /// frame.
     /// </summary>
     private void UpdateDetonations(float dt)
     {
@@ -345,26 +366,97 @@ public sealed class SolarSystemGame : Game
 
             celestial.AdvanceDetonation(dt);
 
-            float progress = Math.Clamp(celestial.DetonationTime / DetonationSeconds, 0f, 1f);
+            if (celestial.DetonationTime < CollapseSeconds)
+            {
+                CollapseInward(celestial, dt);
+                continue;
+            }
+
+            float progress = Math.Clamp((celestial.DetonationTime - CollapseSeconds) / BlastSeconds, 0f, 1f);
             int step = (int)(progress * DetonationSteps);
 
             while (celestial.DetonationStep < step)
             {
                 celestial.DetonationStep++;
-                float radius = celestial.Body.BoundingRadius * (celestial.DetonationStep / (float)DetonationSteps);
 
-                int removed = celestial.Body.Carve(celestial.Body.Position, radius);
-                celestial.RegisterCarve(removed);
-                _voxelsDestroyed += removed;
+                // The front leaves with the first shell and then outruns everything it threw
+                if (celestial.DetonationStep == 1)
+                    _shockwaves.Spawn(celestial.Body.Position, celestial.Velocity, celestial.Body.SurfaceRadius);
 
-                Vector3 shell = celestial.Body.Position + RandomDirection() * radius * 0.8f;
-                _particles.SpawnExplosion(shell, new Color(255, 150, 60, 255), radius / 30f);
-                _debris.Spawn(shell, celestial.Velocity, new Color(210, 110, 70, 255),
-                    celestial.Body.VoxelScale * 1.8f, radius * 0.5f, 10);
+                BlastShell(celestial, celestial.DetonationStep);
             }
 
             if (progress >= 1f) celestial.MarkDestroyed();
         }
+    }
+
+    /// <summary>The implosion: crust breaks off the surface and falls towards the core</summary>
+    private void CollapseInward(CelestialBody celestial, float dt)
+    {
+        VoxelBody body = celestial.Body;
+
+        int count = (int)MathF.Ceiling(dt * 50f);
+
+        for (int i = 0; i < count; i++)
+        {
+            Vector3 direction = RandomDirection();
+
+            // Just below the surface, or the rough terrain leaves the sample in empty space
+            Vector3 position = body.Position + direction * (body.SurfaceRadius * 0.96f);
+            Vector3 local = body.ToLocal(position);
+
+            int block = body.Get((int)local.X, (int)local.Y, (int)local.Z);
+            if (!BlockRegistry.IsSolid(block)) continue;
+
+            Color color = TerrainColors.ForBlock(block, (int)local.X, (int)local.Y, (int)local.Z);
+
+            _debris.SpawnAt(
+                position,
+                celestial.Velocity - direction * (130f + Random.Shared.NextSingle() * 140f),
+                color,
+                body.VoxelScale * 1.1f,
+                grace: CollapseSeconds + 0.6f);
+        }
+    }
+
+    /// <summary>One shell of the outward blast: carve it away and throw what was in it</summary>
+    private void BlastShell(CelestialBody celestial, int step)
+    {
+        VoxelBody body = celestial.Body;
+
+        // Measured against the visible surface, not the bounding sphere: scaled off the latter the
+        // planet is gone halfway through and the rest of the blast throws nothing
+        float fraction = step / (float)DetonationSteps;
+        float radius = body.SurfaceRadius * 1.08f * fraction;
+
+        // Material from deep down is thrown hardest; the outer crust is only shouldered aside
+        float speed = 900f - 520f * fraction;
+
+        Vector3 centre = body.Position;
+        Vector3 inherited = celestial.Velocity;
+
+        int removed = body.Carve(centre, radius, BlockRegistry.Air, out _, (position, block) =>
+        {
+            Vector3 outward = position - centre;
+            float distance = outward.Length();
+            outward = distance < 1e-3f ? RandomDirection() : outward / distance;
+
+            Vector3 local = body.ToLocal(position);
+            Color color = TerrainColors.ForBlock(block, (int)local.X, (int)local.Y, (int)local.Z);
+
+            _debris.SpawnAt(
+                position,
+                inherited + outward * (speed * (0.75f + Random.Shared.NextSingle() * 0.5f)),
+                color,
+                body.VoxelScale * 1.3f,
+                grace: 1.2f);
+        }, VoxelsPerDebrisChunk);
+
+        celestial.RegisterCarve(removed);
+        _voxelsDestroyed += removed;
+
+        _particles.SpawnExplosion(centre + RandomDirection() * radius * 0.8f,
+            new Color(255, 150, 60, 255), radius / 30f);
     }
 
     /// <summary>The pull of every body plus the sun, which is what makes an orbit possible</summary>
@@ -469,6 +561,7 @@ public sealed class SolarSystemGame : Game
 
         _cannon.Draw();
         _debris.Draw();
+        _shockwaves.Draw();
         _particles.Draw();
     }
 
@@ -512,14 +605,25 @@ public sealed class SolarSystemGame : Game
         {
             if (!celestial.Detonating || celestial.Destroyed) continue;
 
-            // The fireball follows the visible surface, not the bounding sphere: sized off the
-            // latter it swallows the camera and washes the whole screen in flat orange
-            float progress = Math.Clamp(celestial.DetonationTime / DetonationSeconds, 0f, 1f);
-            float radius = celestial.Body.SurfaceRadius * (0.35f + progress * 1.15f);
-            byte alpha = (byte)(120 * (1f - progress));
+            if (celestial.DetonationTime < CollapseSeconds)
+            {
+                // Light building up in the breached core while the planet is still whole
+                float glow = celestial.DetonationTime / CollapseSeconds;
 
-            Raylib.DrawSphereEx(celestial.Body.Position, radius, 16, 16,
-                new Color((byte)255, (byte)(190 - 90 * progress), (byte)80, alpha));
+                Raylib.DrawSphereEx(celestial.Body.Position, celestial.Body.CoreRadius * (0.25f + glow * 0.6f), 12, 12,
+                    new Color((byte)255, (byte)220, (byte)140, (byte)(140 * glow)));
+                continue;
+            }
+
+            // Only the bright heart of the blast lives here; the front that races outwards is the
+            // ShockwaveField's job, and one big sphere on top of it would just wash the rubble out
+            float progress = Math.Clamp((celestial.DetonationTime - CollapseSeconds) / BlastSeconds, 0f, 1f);
+            float fade = (1f - progress) * (1f - progress);
+            float radius = celestial.Body.SurfaceRadius * (0.2f + progress * 0.45f);
+
+            foreach ((float scale, float alpha) in _detonationShells)
+                Raylib.DrawSphereEx(celestial.Body.Position, radius * scale, 14, 14,
+                    new Color((byte)255, (byte)(200 - 90 * progress), (byte)90, (byte)(alpha * fade)));
         }
 
         Raylib.EndBlendMode();
@@ -585,6 +689,7 @@ public sealed class SolarSystemGame : Game
             Hud.Bar(16, 98, 220, 22, target.Integrity, integrityColor, $"{target.Integrity * 100f:0}% intact");
 
             if (target.Detonating) Hud.Text("CORE BREACH", 16, 126, 22, Hud.Warning);
+            else if (target.HasVolatileCore) DrawCoreProgress(target);
         }
 
         float gravity = GravityAt(_ship.Position).Length();
@@ -599,8 +704,50 @@ public sealed class SolarSystemGame : Game
 
         if (!Context.DebugOverlay) return;
 
-        Hud.Text($"Shots {_cannon.ActiveShots} | Debris {_debris.Count} | Particles {_particles.ActiveParticles}",
-            16, 160, 18, Color.SkyBlue);
+        Hud.Text($"Shots {_cannon.ActiveShots} | Debris {_debris.Count} | " +
+                 $"Waves {_shockwaves.Count} | Particles {_particles.ActiveParticles}",
+            16, 184, 18, Color.SkyBlue);
+    }
+
+    /// <summary>
+    /// How far the crater you are aiming into has already eaten through the crust. This is the only
+    /// cue a player gets that a planet with a molten core is worth digging at the same spot twice:
+    /// the core itself goes off the moment a round touches it, so it is never seen beforehand.
+    /// </summary>
+    private void DrawCoreProgress(CelestialBody target)
+    {
+        Hud.Text("MOLTEN CORE", 16, 126, 20, new Color(255, 170, 70, 255));
+
+        float progress = CrustProgress(target);
+        Hud.Bar(16, 152, 220, 18, progress, new Color((byte)230, (byte)(140 - 60 * progress), (byte)60, (byte)255),
+            $"crust {progress * 100f:0}%");
+    }
+
+    /// <summary>Depth of the first solid point along the line of sight, as a fraction of the crust</summary>
+    private float CrustProgress(CelestialBody target)
+    {
+        VoxelBody body = target.Body;
+
+        float crust = body.SurfaceRadius - body.CoreRadius;
+        if (crust <= 0f) return 0f;
+
+        // Only walk the stretch that can possibly be inside the body
+        float toCentre = Vector3.Distance(_camera.Position, body.Position);
+        float start = MathF.Max(0f, toCentre - body.BoundingRadius);
+        float end = toCentre + body.BoundingRadius;
+
+        Vector3 forward = _ship.Forward;
+
+        for (float travelled = start; travelled < end; travelled += 8f)
+        {
+            Vector3 point = _camera.Position + forward * travelled;
+            if (!body.IsSolidAt(point)) continue;
+
+            float depth = body.SurfaceRadius - Vector3.Distance(point, body.Position);
+            return Math.Clamp(depth / crust, 0f, 1f);
+        }
+
+        return 0f;
     }
 
     /// <summary>Charge bar right under the crosshair, where the eye already is while aiming</summary>
