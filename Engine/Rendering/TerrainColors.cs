@@ -6,14 +6,19 @@ namespace VoxelEngine.Rendering;
 
 public static class TerrainColors
 {
+    /// <summary>Blocks per axis that share a shade, as a power of two</summary>
+    private const int VariationShift = 2;
+
     // Pure albedo: sun, ambient and AO are added during meshing and in the shader
     public static Color ForBlock(int id, int wx, int y, int wz)
     {
         BlockDef def = BlockRegistry.Get(id);
         Color baseColor = def.UseHeightGradient ? HeightColor(y) : def.BaseColor;
 
-        // A slight per-voxel variation, so large surfaces do not look sterile
-        float variation = 0.94f + 0.12f * Hash(wx, y, wz);
+        // A slight variation so large surfaces do not look sterile. It runs per patch rather than
+        // per voxel: two faces only merge in the greedy mesher when their colour matches exactly,
+        // and a shade of its own for every block would leave nothing to merge.
+        float variation = 0.94f + 0.12f * Hash(wx >> VariationShift, y >> VariationShift, wz >> VariationShift);
         return Scale(baseColor, variation);
     }
 

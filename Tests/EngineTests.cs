@@ -281,3 +281,116 @@ public class DayNightCycleTests
         Assert.Equal(90f, cycle.SunAngleDegrees, 2);
     }
 }
+
+/// <summary>
+/// Greedy meshing merges neighbouring faces into rectangles. That is only allowed to change how the
+/// surface is cut up, never the surface itself, so these tests pin the total area, the direction the
+/// triangles face, and that the merging actually happens.
+/// </summary>
+public class GreedyMeshingTests
+{
+    private const int WorldHeight = 32;
+
+    private static readonly Dictionary<int, byte[]> NoRefinements = new();
+
+    [Fact]
+    public void AnIsolatedBlockKeepsItsSixFaces()
+    {
+        ChunkMeshData mesh = Mesh(Solid((x, y, z) => x == 5 && y == 5 && z == 5));
+
+        Assert.Equal(36, mesh.VertexCount); // 6 faces, 2 triangles each
+        Assert.Equal(6f, Area(mesh), 3);
+    }
+
+    [Fact]
+    public void MergingKeepsTheTotalSurfaceArea()
+    {
+        // A jumble of solid and empty blocks: plenty of merged runs, plenty of corners where the
+        // ambient occlusion differs and a face has to go out on its own
+        byte[] padded = Solid((x, y, z) => (x * 73 + y * 151 + z * 31) % 7 < 4);
+
+        Assert.Equal(ExposedFaces(padded), Area(Mesh(padded)), 2);
+    }
+
+    [Fact]
+    public void EveryTriangleStillFacesOutwards()
+    {
+        ChunkMeshData mesh = Mesh(Solid((x, y, z) => (x * 17 + y * 41 + z * 97) % 5 < 3));
+
+        for (int triangle = 0; triangle < mesh.VertexCount / 3; triangle++)
+        {
+            Vector3 a = Vertex(mesh, triangle * 3);
+            Vector3 b = Vertex(mesh, triangle * 3 + 1);
+            Vector3 c = Vertex(mesh, triangle * 3 + 2);
+
+            var stored = new Vector3(
+                mesh.Normals[triangle * 9], mesh.Normals[triangle * 9 + 1], mesh.Normals[triangle * 9 + 2]);
+
+            // A wrongly stretched corner would flip the winding and the face would vanish
+            Assert.True(Vector3.Dot(Vector3.Cross(b - a, c - a), stored) > 0f, $"triangle {triangle} is inside out");
+        }
+    }
+
+    [Fact]
+    public void AFlatSurfaceCollapsesIntoFarFewerQuads()
+    {
+        // Solid up to y = 8 including the border, so the top is the only exposed side
+        byte[] padded = Solid((_, y, _2) => y <= 8);
+
+        ChunkMeshData mesh = Mesh(padded);
+        int naive = ExposedFaces(padded) * 6;
+
+        Assert.Equal(Chunk.Size * Chunk.Size, ExposedFaces(padded));
+        Assert.True(mesh.VertexCount * 4 < naive,
+            $"expected the flat top to merge, got {mesh.VertexCount} of {naive} vertices");
+    }
+
+    private static ChunkMeshData Mesh(byte[] padded)
+        => ChunkMesher.Build(padded, NoRefinements, WorldHeight, 0, 0);
+
+    private static byte[] Solid(Func<int, int, int, bool> shape)
+    {
+        var padded = new byte[ChunkMesher.PaddedLength(WorldHeight)];
+
+        for (int y = -1; y <= WorldHeight; y++)
+        for (int z = -1; z <= Chunk.Size; z++)
+        for (int x = -1; x <= Chunk.Size; x++)
+            if (shape(x, y, z)) padded[ChunkMesher.Index(x, y, z)] = BlockRegistry.Terrain;
+
+        return padded;
+    }
+
+    /// <summary>What the unmerged mesher would have emitted: one unit face per open side</summary>
+    private static int ExposedFaces(byte[] padded)
+    {
+        (int X, int Y, int Z)[] directions = { (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) };
+        int faces = 0;
+
+        for (int y = 0; y < WorldHeight; y++)
+        for (int z = 0; z < Chunk.Size; z++)
+        for (int x = 0; x < Chunk.Size; x++)
+        {
+            if (!BlockRegistry.IsSolid(padded[ChunkMesher.Index(x, y, z)])) continue;
+
+            foreach ((int dx, int dy, int dz) in directions)
+                if (!BlockRegistry.IsSolid(padded[ChunkMesher.Index(x + dx, y + dy, z + dz)])) faces++;
+        }
+
+        return faces;
+    }
+
+    private static float Area(ChunkMeshData mesh)
+    {
+        float area = 0f;
+
+        for (int triangle = 0; triangle < mesh.VertexCount / 3; triangle++)
+            area += Vector3.Cross(
+                Vertex(mesh, triangle * 3 + 1) - Vertex(mesh, triangle * 3),
+                Vertex(mesh, triangle * 3 + 2) - Vertex(mesh, triangle * 3)).Length() * 0.5f;
+
+        return area;
+    }
+
+    private static Vector3 Vertex(ChunkMeshData mesh, int index)
+        => new(mesh.Vertices[index * 3], mesh.Vertices[index * 3 + 1], mesh.Vertices[index * 3 + 2]);
+}
