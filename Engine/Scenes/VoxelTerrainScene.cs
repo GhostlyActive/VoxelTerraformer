@@ -354,7 +354,7 @@ public sealed class VoxelTerrainScene : IDisposable
             _clouds.Coverage = _settings.CloudCoverage;
             _clouds.Height = _settings.CloudHeight;
             _clouds.DriftSpeed = _settings.CloudDrift;
-            _clouds.Draw(Camera, frustum, ElapsedTime, DayNight.Daylight01, Player.Position);
+            _clouds.Draw(frustum, ElapsedTime, DayNight.Daylight01, Player.Position);
         }
 
         if (!ShowDebugGeometry) return;
@@ -383,6 +383,7 @@ public sealed class VoxelTerrainScene : IDisposable
     public void Dispose()
     {
         Meshes.Dispose();
+        _clouds?.Dispose();
         _shader.Unload();
     }
 }

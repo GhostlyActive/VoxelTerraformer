@@ -45,6 +45,8 @@ public sealed class GameHost : IDisposable
     /// <summary>Debug overlay on F3; games read it through the <see cref="GameContext"/></summary>
     public bool DebugOverlay { get; private set; }
 
+    private readonly FrameStats _frameStats = new();
+
     public GameHost(GameRegistry registry, HostOptions? options = null)
     {
         _registry = registry;
@@ -81,7 +83,7 @@ public sealed class GameHost : IDisposable
         _pauseMenu = new PauseMenu(_registry);
         _tuningMenu = new TuningMenu(_settings);
         _cursorFree = smokeTest;
-        DebugOverlay = smokeTest; // on right away in the smoke test, so the stats end up on the screenshot
+        SetDebugOverlay(smokeTest); // on right away in the smoke test, so the stats end up on the screenshot
 
         SwitchTo(startGameId);
 
@@ -90,6 +92,7 @@ public sealed class GameHost : IDisposable
         while (!Raylib.WindowShouldClose() && !_quitRequested)
         {
             float dt = Raylib.GetFrameTime();
+            _frameStats.Add(dt);
             _statusTimer = MathF.Max(0f, _statusTimer - dt);
 
             // If the menu was open at the start of the frame, the game gets no input this frame:
@@ -108,7 +111,7 @@ public sealed class GameHost : IDisposable
 
             if (!paused)
             {
-                if (Raylib.IsKeyPressed(KeyboardKey.F3)) DebugOverlay = !DebugOverlay;
+                if (Raylib.IsKeyPressed(KeyboardKey.F3)) SetDebugOverlay(!DebugOverlay);
 
                 _tuningMenu.Update();
                 _game!.Update(dt);
@@ -129,7 +132,10 @@ public sealed class GameHost : IDisposable
 
             _game.DrawHud();
 
-            if (DebugOverlay) Raylib.DrawFPS(10, 10);
+            if (DebugOverlay)
+                Raylib.DrawText(
+                    $"{_frameStats.AverageMs:F2} ms | peak {_frameStats.PeakMs:F2} ms | {_frameStats.Fps} FPS",
+                    10, 10, 20, Color.Green);
 
             _tuningMenu.Draw(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
             _pauseMenu.Draw(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
@@ -147,6 +153,16 @@ public sealed class GameHost : IDisposable
         // The smoke test must not touch the tuning values: the window grabs focus on startup, so
         // stray key presses would otherwise end up in the config for good
         if (!smokeTest) _settings.Save();
+    }
+
+    /// <summary>
+    /// The debug overlay lifts the frame cap along with it. Capped, every frame reads as the cap
+    /// no matter what the engine costs, and the timings next to it would say nothing at all.
+    /// </summary>
+    private void SetDebugOverlay(bool on)
+    {
+        DebugOverlay = on;
+        Raylib.SetTargetFPS(on ? 0 : _options.TargetFps);
     }
 
     private void HandleMenu()
