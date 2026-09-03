@@ -36,7 +36,7 @@ Thumbs.db
 # ==============================
 packages/
 *.nupkg
-# (optional, meist NICHT ignorieren)
+# (optional, usually NOT ignored)
 # packages.lock.json
 
 # ==============================
@@ -50,6 +50,7 @@ TestResults/
 coverage/
 
 # ==============================
-# Rauchtest
+# Smoke test / publish output
 # ==============================
 smoke.png
+publish/

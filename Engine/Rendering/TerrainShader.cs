@@ -3,6 +3,9 @@ using System.Numerics;
 
 namespace VoxelEngine.Rendering;
 
+/// <summary>A local light for the terrain shader: where it sits, how far it carries, what colour</summary>
+public readonly record struct PointLight(Vector3 Position, float Range, Vector3 Color);
+
 /// <summary>
 /// Shader for the chunk meshes: vertex colours (albedo plus baked ambient occlusion) and dynamic
 /// sunlight. GLSL 330 runs on Windows, Linux and macOS.
@@ -46,6 +49,12 @@ uniform float fogEnd;
 uniform int occluderCount;
 uniform vec4 occluders[MAX_OCCLUDERS];
 
+// Local lights: an explosion, a lava pool, a muzzle flash. xyz is the position, w the range.
+#define MAX_POINT_LIGHTS 8
+uniform int pointLightCount;
+uniform vec4 pointLights[MAX_POINT_LIGHTS];
+uniform vec4 pointLightColors[MAX_POINT_LIGHTS];
+
 out vec4 finalColor;
 
 float sunVisibility(vec3 position)
@@ -69,11 +78,36 @@ float sunVisibility(vec3 position)
     return visibility;
 }
 
+vec3 pointLightAt(vec3 position, vec3 normal)
+{
+    vec3 sum = vec3(0.0);
+
+    for (int i = 0; i < pointLightCount; i++)
+    {
+        vec3 toLight = pointLights[i].xyz - position;
+        float distance = length(toLight);
+        float range = pointLights[i].w;
+        if (distance >= range) continue;
+
+        // Quadratic falloff that actually reaches zero at the range, so a light has a clear edge
+        float attenuation = 1.0 - distance / range;
+        attenuation *= attenuation;
+
+        float lambert = max(dot(normal, toLight / max(distance, 0.0001)), 0.0);
+        sum += pointLightColors[i].rgb * (lambert * attenuation);
+    }
+
+    return sum;
+}
+
 void main()
 {
-    float diffuse = max(dot(normalize(fragNormal), -sunDirection), 0.0);
+    vec3 normal = normalize(fragNormal);
+
+    float diffuse = max(dot(normal, -sunDirection), 0.0);
     diffuse *= sunVisibility(fragPosition);
-    vec3 lit = fragColor.rgb * (ambientColor + sunColor * diffuse);
+
+    vec3 lit = fragColor.rgb * (ambientColor + sunColor * diffuse + pointLightAt(fragPosition, normal));
 
     // The vertex colour's alpha carries emissive (0 = lit normally, 1 = self-lit)
     vec3 color = mix(lit, fragColor.rgb, fragColor.a);
@@ -94,12 +128,18 @@ void main()
     private readonly int _locFogEnd;
     private readonly int _locOccluderCount;
     private readonly int _locOccluders;
+    private readonly int _locPointLightCount;
+    private readonly int _locPointLights;
+    private readonly int _locPointLightColors;
     private Material _material;
 
     public Material Material => _material;
 
     /// <summary>Has to match MAX_OCCLUDERS in the fragment shader</summary>
     public const int MaxShadowCasters = 8;
+
+    /// <summary>Has to match MAX_POINT_LIGHTS in the fragment shader</summary>
+    public const int MaxPointLights = 8;
 
     public float FogStart { get; set; } = 100f;
     public float FogEnd { get; set; } = 230f;
@@ -116,6 +156,9 @@ void main()
         _locFogEnd = Raylib.GetShaderLocation(_shader, "fogEnd");
         _locOccluderCount = Raylib.GetShaderLocation(_shader, "occluderCount");
         _locOccluders = Raylib.GetShaderLocation(_shader, "occluders");
+        _locPointLightCount = Raylib.GetShaderLocation(_shader, "pointLightCount");
+        _locPointLights = Raylib.GetShaderLocation(_shader, "pointLights");
+        _locPointLightColors = Raylib.GetShaderLocation(_shader, "pointLightColors");
 
         _material = Raylib.LoadMaterialDefault();
         _material.Shader = _shader;
@@ -134,8 +177,33 @@ void main()
         Raylib.SetShaderValue(_shader, _locFogStart, FogStart, ShaderUniformDataType.Float);
         Raylib.SetShaderValue(_shader, _locFogEnd, FogEnd, ShaderUniformDataType.Float);
 
-        // Default to no shadows; a caller that wants them sets them right after
+        // Default to no shadows and no local lights; a caller that wants them sets them right after
         Raylib.SetShaderValue(_shader, _locOccluderCount, 0, ShaderUniformDataType.Int);
+        Raylib.SetShaderValue(_shader, _locPointLightCount, 0, ShaderUniformDataType.Int);
+    }
+
+    /// <summary>
+    /// Local lights for the next draw. Anything past <see cref="MaxPointLights"/> is ignored, so
+    /// pass the brightest or nearest ones first.
+    /// </summary>
+    public void SetPointLights(ReadOnlySpan<PointLight> lights)
+    {
+        int count = Math.Min(lights.Length, MaxPointLights);
+        Raylib.SetShaderValue(_shader, _locPointLightCount, count, ShaderUniformDataType.Int);
+
+        if (count == 0) return;
+
+        Span<Vector4> positions = stackalloc Vector4[MaxPointLights];
+        Span<Vector4> colors = stackalloc Vector4[MaxPointLights];
+
+        for (int i = 0; i < count; i++)
+        {
+            positions[i] = new Vector4(lights[i].Position, lights[i].Range);
+            colors[i] = new Vector4(lights[i].Color, 0f);
+        }
+
+        Raylib.SetShaderValueV(_shader, _locPointLights, positions[..count], ShaderUniformDataType.Vec4, count);
+        Raylib.SetShaderValueV(_shader, _locPointLightColors, colors[..count], ShaderUniformDataType.Vec4, count);
     }
 
     /// <summary>

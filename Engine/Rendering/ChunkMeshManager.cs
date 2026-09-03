@@ -7,26 +7,45 @@ using VoxelEngine.World;
 namespace VoxelEngine.Rendering;
 
 /// <summary>
-/// Keeps one GPU mesh per chunk and rebuilds it in the background when something changes.
-/// Snapshot and upload run on the main thread (GL context), the meshing itself on a worker thread;
-/// the old mesh stays visible until the new one is ready.
+/// Keeps the GPU meshes of the loaded chunks and rebuilds them in the background when something
+/// changes. Snapshot and upload run on the main thread (GL context), the meshing itself on a worker
+/// thread; the old mesh stays visible until the new one is ready.
+///
+/// A chunk is not one mesh but a stack of <see cref="SectionCount"/> sections. An edit only dirties
+/// the sections it touched, which matters as soon as terrain has caves and overhangs: meshing the
+/// whole column for a one-metre brush stroke costs the same as meshing it for a bomb crater.
+/// It also lets the frustum throw away sections rather than whole columns.
 /// </summary>
 public sealed class ChunkMeshManager : IDisposable
 {
+    /// <summary>Blocks per meshing section; <see cref="VoxelWorld.WorldHeight"/> must divide by it</summary>
+    public const int SectionHeight = 16;
+
+    public const int SectionCount = VoxelWorld.WorldHeight / SectionHeight;
+
+    private readonly record struct SectionKey(ChunkCoord Coord, int Section);
+
     private sealed class Entry
     {
-        public Mesh Mesh;
-        public bool HasMesh;
+        public readonly Mesh[] Meshes = new Mesh[SectionCount];
+        public readonly bool[] HasMesh = new bool[SectionCount];
     }
 
-    private readonly record struct MeshJob(ChunkCoord Coord, byte[] Padded, Dictionary<int, byte[]> Refinements, int WorldX, int WorldZ, int Generation, bool Smooth);
-    private readonly record struct MeshResult(ChunkCoord Coord, ChunkMeshData Data, int Generation, bool Smooth);
+    // One job per chunk, carrying a bit per section that needs rebuilding. Sections used to be
+    // jobs of their own, which meant taking the same snapshot four times over for the same chunk —
+    // and the snapshot is the part that runs on the main thread.
+    private readonly record struct MeshJob(
+        ChunkCoord Coord, int Sections, byte[] Padded, Dictionary<int, byte[]> Refinements,
+        int WorldX, int WorldZ, int Generation, bool Smooth);
+
+    private readonly record struct MeshResult(
+        ChunkCoord Coord, int Sections, ChunkMeshData?[] Data, int Generation, bool Smooth);
 
     private readonly VoxelWorld _world;
     private readonly Dictionary<ChunkCoord, Entry> _entries = new();
-    private readonly HashSet<ChunkCoord> _dirty = new();
+    private readonly HashSet<SectionKey> _dirty = new();
     private readonly HashSet<ChunkCoord> _inFlight = new();
-    private readonly List<ChunkCoord> _startable = new();
+    private readonly Dictionary<ChunkCoord, int> _startable = new();
 
     // Counts unloads per coordinate: results from older generations (from before a "Load world",
     // for instance) are discarded even when the coordinate is occupied again
@@ -47,11 +66,11 @@ public sealed class ChunkMeshManager : IDisposable
     public ChunkMeshManager(VoxelWorld world)
     {
         _world = world;
-        _world.ChunkDirty += coord => _dirty.Add(coord);
+        _world.ChunkDirty += MarkDirty;
         _world.ChunkUnloaded += OnChunkUnloaded;
 
         // Several workers, because marching-cubes meshing is far more expensive than the blocky
-        // kind. Only one job per chunk is ever in flight, so an older mesh can never overtake a newer one.
+        // kind. Only one job per section is ever in flight, so an older mesh can never overtake a newer one.
         int workerCount = Math.Clamp(Environment.ProcessorCount - 2, 1, 4);
         _workers = new Thread[workerCount];
         for (int i = 0; i < workerCount; i++)
@@ -61,6 +80,18 @@ public sealed class ChunkMeshManager : IDisposable
         }
     }
 
+    /// <summary>An edit between <paramref name="minY"/> and <paramref name="maxY"/> dirties the sections it spans</summary>
+    private void MarkDirty(ChunkCoord coord, int minY, int maxY)
+    {
+        // Widened by one block: a section's outermost blocks read the neighbourhood beyond it, so
+        // an edit right at a section border changes the mesh on both sides
+        int first = Math.Clamp((minY - 1) / SectionHeight, 0, SectionCount - 1);
+        int last = Math.Clamp((maxY + 1) / SectionHeight, 0, SectionCount - 1);
+
+        for (int section = first; section <= last; section++)
+            _dirty.Add(new SectionKey(coord, section));
+    }
+
     /// <summary>Switch the presentation; every loaded chunk is remeshed</summary>
     public void SetSmoothRendering(bool smooth)
     {
@@ -68,16 +99,23 @@ public sealed class ChunkMeshManager : IDisposable
 
         SmoothRendering = smooth;
         foreach (Chunk chunk in _world.Chunks)
-            _dirty.Add(chunk.Coord);
+            MarkDirty(chunk.Coord, 0, VoxelWorld.WorldHeight - 1);
     }
 
     private void OnChunkUnloaded(ChunkCoord coord)
     {
-        _dirty.Remove(coord);
+        for (int section = 0; section < SectionCount; section++)
+            _dirty.Remove(new SectionKey(coord, section));
+
+        _inFlight.Remove(coord);
+
         _generations[coord] = GenerationOf(coord) + 1; // invalidate running jobs for this coordinate
 
-        if (_entries.Remove(coord, out Entry? entry) && entry.HasMesh)
-            Raylib.UnloadMesh(entry.Mesh);
+        if (!_entries.Remove(coord, out Entry? entry)) return;
+
+        for (int section = 0; section < SectionCount; section++)
+            if (entry.HasMesh[section])
+                Raylib.UnloadMesh(entry.Meshes[section]);
     }
 
     private int GenerationOf(ChunkCoord coord)
@@ -93,13 +131,35 @@ public sealed class ChunkMeshManager : IDisposable
             int worldX = (int)chunk.WorldPosition.X;
             int worldZ = (int)chunk.WorldPosition.Z;
 
-            ChunkMeshData data = SmoothRendering
-                ? SmoothChunkMesher.Build(padded, refinements, VoxelWorld.WorldHeight, worldX, worldZ)
-                : ChunkMesher.Build(padded, refinements, VoxelWorld.WorldHeight, worldX, worldZ);
+            for (int section = 0; section < SectionCount; section++)
+            {
+                ChunkMeshData data = BuildSection(padded, refinements, worldX, worldZ, section, SmoothRendering);
+                Upload(new SectionKey(chunk.Coord, section), data);
+            }
 
             ArrayPool<byte>.Shared.Return(padded);
-            Upload(chunk.Coord, data);
         }
+    }
+
+    private static ChunkMeshData BuildSection(
+        byte[] padded, Dictionary<int, byte[]> refinements, int worldX, int worldZ, int section, bool smooth)
+    {
+        int start = section * SectionHeight;
+        int end = start + SectionHeight;
+
+        return smooth
+            ? SmoothChunkMesher.Build(padded, refinements, VoxelWorld.WorldHeight, worldX, worldZ, start, end)
+            : ChunkMesher.Build(padded, refinements, VoxelWorld.WorldHeight, worldX, worldZ, start, end);
+    }
+
+    private Entry EntryFor(ChunkCoord coord)
+    {
+        if (_entries.TryGetValue(coord, out Entry? entry)) return entry;
+
+        entry = new Entry();
+        _entries[coord] = entry;
+
+        return entry;
     }
 
     public void Update()
@@ -108,37 +168,48 @@ public sealed class ChunkMeshManager : IDisposable
         while (_results.TryDequeue(out MeshResult result))
         {
             _inFlight.Remove(result.Coord);
+
             if (result.Generation != GenerationOf(result.Coord)) continue; // snapshot of a discarded state
             if (result.Smooth != SmoothRendering) continue; // presentation switched in the meantime
             if (!_world.TryGetChunk(result.Coord, out _)) continue; // unloaded in the meantime
-            Upload(result.Coord, result.Data);
+
+            for (int section = 0; section < SectionCount; section++)
+                if (result.Data[section] is { } data)
+                    Upload(new SectionKey(result.Coord, section), data);
         }
 
         if (_dirty.Count == 0) return;
 
-        // At most one job per chunk; anything dirtied again stays in the set until the next round
+        // Gather the dirty sections per chunk; a chunk already being meshed waits for the next round
         _startable.Clear();
-        foreach (ChunkCoord coord in _dirty)
-            if (!_inFlight.Contains(coord))
-                _startable.Add(coord);
+        foreach (SectionKey key in _dirty)
+        {
+            if (_inFlight.Contains(key.Coord)) continue;
 
-        // Snapshots run on the main thread, throttled so a mode switch (every chunk dirty at once)
+            _startable.TryGetValue(key.Coord, out int mask);
+            _startable[key.Coord] = mask | (1 << key.Section);
+        }
+
+        // Snapshots run on the main thread, throttled so a mode switch (everything dirty at once)
         // does not stutter the frame
-        const int maxStartsPerFrame = 12;
+        const int maxChunksPerFrame = 8;
         int started = 0;
 
-        foreach (ChunkCoord coord in _startable)
+        foreach ((ChunkCoord coord, int sections) in _startable)
         {
-            if (started >= maxStartsPerFrame) break;
+            if (started >= maxChunksPerFrame) break;
 
-            _dirty.Remove(coord);
+            for (int section = 0; section < SectionCount; section++)
+                if ((sections & (1 << section)) != 0)
+                    _dirty.Remove(new SectionKey(coord, section));
+
             if (!_world.TryGetChunk(coord, out Chunk chunk)) continue;
 
             started++;
 
             _inFlight.Add(coord);
             _jobs.Add(new MeshJob(
-                coord, RentSnapshot(chunk), SnapshotRefinements(chunk),
+                coord, sections, RentSnapshot(chunk), SnapshotRefinements(chunk),
                 (int)chunk.WorldPosition.X, (int)chunk.WorldPosition.Z, GenerationOf(coord), SmoothRendering));
         }
     }
@@ -147,12 +218,15 @@ public sealed class ChunkMeshManager : IDisposable
     {
         foreach (MeshJob job in _jobs.GetConsumingEnumerable())
         {
-            ChunkMeshData data = job.Smooth
-                ? SmoothChunkMesher.Build(job.Padded, job.Refinements, VoxelWorld.WorldHeight, job.WorldX, job.WorldZ)
-                : ChunkMesher.Build(job.Padded, job.Refinements, VoxelWorld.WorldHeight, job.WorldX, job.WorldZ);
+            var data = new ChunkMeshData?[SectionCount];
+
+            for (int section = 0; section < SectionCount; section++)
+                if ((job.Sections & (1 << section)) != 0)
+                    data[section] = BuildSection(
+                        job.Padded, job.Refinements, job.WorldX, job.WorldZ, section, job.Smooth);
 
             ArrayPool<byte>.Shared.Return(job.Padded);
-            _results.Enqueue(new MeshResult(job.Coord, data, job.Generation, job.Smooth));
+            _results.Enqueue(new MeshResult(job.Coord, job.Sections, data, job.Generation, job.Smooth));
         }
     }
 
@@ -240,18 +314,14 @@ public sealed class ChunkMeshManager : IDisposable
             refinements[ChunkMesher.Index(lx, ly, lz)] = field;
     }
 
-    private void Upload(ChunkCoord coord, ChunkMeshData data)
+    private void Upload(SectionKey key, ChunkMeshData data)
     {
-        if (!_entries.TryGetValue(coord, out Entry? entry))
-        {
-            entry = new Entry();
-            _entries[coord] = entry;
-        }
+        Entry entry = EntryFor(key.Coord);
 
-        if (entry.HasMesh)
+        if (entry.HasMesh[key.Section])
         {
-            Raylib.UnloadMesh(entry.Mesh);
-            entry.HasMesh = false;
+            Raylib.UnloadMesh(entry.Meshes[key.Section]);
+            entry.HasMesh[key.Section] = false;
         }
 
         if (data.VertexCount == 0) return;
@@ -265,8 +335,8 @@ public sealed class ChunkMeshManager : IDisposable
         data.Colors.AsSpan(0, data.VertexCount * 4).CopyTo(mesh.ColorsAs<byte>());
         Raylib.UploadMesh(ref mesh, false);
 
-        entry.Mesh = mesh;
-        entry.HasMesh = true;
+        entry.Meshes[key.Section] = mesh;
+        entry.HasMesh[key.Section] = true;
     }
 
     public void Draw(Material material, Frustum frustum)
@@ -276,24 +346,28 @@ public sealed class ChunkMeshManager : IDisposable
 
         foreach ((ChunkCoord coord, Entry entry) in _entries)
         {
-            if (!entry.HasMesh) continue;
-            TotalVertices += entry.Mesh.VertexCount;
+            // Vertices are in chunk-local coordinates, so one translation carries every section
+            Matrix4x4 transform = Raymath.MatrixTranslate(coord.X * Chunk.Size, 0, coord.Z * Chunk.Size);
 
-            var min = new Vector3(coord.X * Chunk.Size, 0, coord.Z * Chunk.Size);
-            var max = min + new Vector3(Chunk.Size, VoxelWorld.WorldHeight, Chunk.Size);
-            if (!frustum.Intersects(min, max)) continue;
+            for (int section = 0; section < SectionCount; section++)
+            {
+                if (!entry.HasMesh[section]) continue;
+                TotalVertices += entry.Meshes[section].VertexCount;
 
-            VisibleChunks++;
-            Raylib.DrawMesh(entry.Mesh, material, Raymath.MatrixTranslate(min.X, min.Y, min.Z));
+                var min = new Vector3(coord.X * Chunk.Size, section * SectionHeight, coord.Z * Chunk.Size);
+                var max = min + new Vector3(Chunk.Size, SectionHeight, Chunk.Size);
+                if (!frustum.Intersects(min, max)) continue;
+
+                VisibleChunks++;
+                Raylib.DrawMesh(entry.Meshes[section], material, transform);
+            }
         }
     }
 
     public void DrawChunkBounds()
     {
-        foreach ((ChunkCoord coord, Entry entry) in _entries)
+        foreach ((ChunkCoord coord, Entry _) in _entries)
         {
-            if (!entry.HasMesh) continue;
-
             var center = new Vector3(
                 coord.X * Chunk.Size + Chunk.Size / 2f,
                 VoxelWorld.WorldHeight / 2f,
@@ -312,8 +386,10 @@ public sealed class ChunkMeshManager : IDisposable
         while (_results.TryDequeue(out _)) { }
 
         foreach (Entry entry in _entries.Values)
-            if (entry.HasMesh)
-                Raylib.UnloadMesh(entry.Mesh);
+            for (int section = 0; section < SectionCount; section++)
+                if (entry.HasMesh[section])
+                    Raylib.UnloadMesh(entry.Meshes[section]);
+
         _entries.Clear();
     }
 }

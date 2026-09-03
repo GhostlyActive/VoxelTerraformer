@@ -10,18 +10,25 @@ namespace VoxelEngine.Rendering;
 /// </summary>
 public sealed class CloudLayer
 {
-    private const float CellSize = 24f;
-    private const float CubeSize = 4f;       // voxel size of the clouds
+    // Cell and cube size scale with the range, so a wider sky costs the same number of blocks and
+    // the clouds keep roughly the same size on screen
+    private const float CellSize = 46f;
+    private const float CubeSize = 7f;       // voxel size of the clouds
     private const int BlobX = 6;             // cubes per axis in a lump
     private const int BlobY = 3;
     private const int BlobZ = 6;
-    private const float Range = 250f;        // out past the fog, and it travels with the player
+    private const float Range = 780f;        // out past the fog, and it travels with the player
 
     public float Coverage { get; set; } = 0.35f;
     public float Height { get; set; } = 80f;
     public float DriftSpeed { get; set; } = 1.2f;   // blocks per second
 
-    public void Draw(Camera3D camera, float time, float daylight01, Vector3 center)
+    /// <summary>
+    /// <paramref name="frustum"/> is the same one the terrain is culled against. Without it the
+    /// layer builds every cell of a sky nearly two kilometres across, of which the player sees
+    /// maybe a quarter.
+    /// </summary>
+    public void Draw(Camera3D camera, Frustum frustum, float time, float daylight01, Vector3 center)
     {
         // nearly white by day, dark blue-grey at night
         Color color = Lerp(new Color(88, 98, 126, 255), new Color(250, 250, 255, 255), daylight01);
@@ -30,7 +37,8 @@ public sealed class CloudLayer
         int shift = (int)MathF.Floor(offset);
         float slide = (offset - shift) * CellSize;
 
-        Vector3 forward = Vector3.Normalize(camera.Target - camera.Position);
+        // Half the extent of a lump, for the box the frustum is tested against
+        var blobExtent = new Vector3(BlobX * CubeSize * 0.7f, BlobY * CubeSize * 0.7f, BlobZ * CubeSize * 0.7f);
 
         int minX = (int)MathF.Floor((center.X - Range) / CellSize) - 1;
         int maxX = (int)MathF.Floor((center.X + Range) / CellSize);
@@ -49,9 +57,7 @@ public sealed class CloudLayer
                 Height,
                 cz * CellSize + CellSize / 2f);
 
-            // Anything clearly behind the camera would only cost cubes with nothing to show
-            Vector3 toCell = cellCenter - camera.Position;
-            if (toCell.LengthSquared() > CellSize * CellSize && Vector3.Dot(toCell, forward) < 0f) continue;
+            if (!frustum.Intersects(cellCenter - blobExtent, cellCenter + blobExtent)) continue;
 
             DrawBlob(cellCenter, cx - shift, cz, color, cube);
         }

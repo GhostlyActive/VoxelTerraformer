@@ -41,8 +41,8 @@ public sealed class EngineSettings
     /// <summary>Speed of the day cycle; 0 stops the sun. Ignored by games that pin the sun.</summary>
     public float TimeFlow { get; set; } = 1f;
 
-    public float FogStart { get; set; } = 100f;
-    public float FogEnd { get; set; } = 230f;
+    public float FogStart { get; set; } = 460f;
+    public float FogEnd { get; set; } = 740f;
 
     /// <summary>Share of the sky cells that carry a cloud</summary>
     public float CloudCoverage { get; set; } = 0.35f;

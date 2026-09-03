@@ -9,18 +9,18 @@
     <RootNamespace>Terraformer</RootNamespace>
   </PropertyGroup>
 
-  <!-- Die Engine ist ein eigenes Projekt im Unterordner und darf hier nicht mitkompiliert werden -->
+  <!-- Engine and Tests are projects of their own in subfolders and must not be compiled in here -->
   <ItemGroup>
-    <Compile Remove="Engine/**" />
-    <None Remove="Engine/**" />
-    <EmbeddedResource Remove="Engine/**" />
+    <Compile Remove="Engine/**;Tests/**" />
+    <None Remove="Engine/**;Tests/**" />
+    <EmbeddedResource Remove="Engine/**;Tests/**" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="Engine/Engine.csproj" />
   </ItemGroup>
 
-  <!-- Assets landen unter Games/<Id>/Assets im Ausgabeordner — genau dort sucht GameContext.AssetPath -->
+  <!-- Assets end up under Games/<Id>/Assets in the output folder, which is where GameContext.AssetPath looks -->
   <ItemGroup>
     <Content Include="Games/**/Assets/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

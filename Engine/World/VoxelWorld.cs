@@ -10,10 +10,11 @@ public class VoxelWorld
 {
     public const int WorldHeight = 64;
 
-    // Streaming: chunks are loaded in a circle around the player and unloaded with hysteresis
-    // (LoadRadius * chunk size = 256 blocks, which is past the fog, so loading stays invisible)
-    public const int LoadRadius = 8;
-    public const int UnloadRadius = 10;
+    // Streaming: chunks are loaded in a circle around the player and unloaded with hysteresis.
+    // LoadRadius * chunk size = 768 blocks, which only pays off because distant chunks are meshed
+    // with merged blocks (see ChunkMeshManager); at full detail this radius would not hold 60 fps.
+    public const int LoadRadius = 24;
+    public const int UnloadRadius = 26;
 
     private static readonly (int X, int Z)[] _loadOrder = BuildLoadOrder();
 
@@ -82,8 +83,11 @@ public class VoxelWorld
     /// <summary>Both fine modes use the same sphere brush; only the presentation differs</summary>
     public bool UsesSculptTool => Mode != TerrainMode.Blocks;
 
-    /// <summary>Chunk needs a new mesh (also fires for neighbours when an edit touches an edge)</summary>
-    public event Action<ChunkCoord>? ChunkDirty;
+    /// <summary>
+    /// Chunk needs a new mesh between the two block heights, inclusive. Also fires for neighbours
+    /// when an edit touches an edge, because face culling and ambient occlusion cross chunk borders.
+    /// </summary>
+    public event Action<ChunkCoord, int, int>? ChunkDirty;
 
     /// <summary>Block removed: centre plus albedo, for particles among others</summary>
     public event Action<Vector3, Color>? BlockBroken;
@@ -221,7 +225,7 @@ public class VoxelWorld
         // space disappear, and ambient occlusion at the borders is only right with neighbour data
         for (int dz = -1; dz <= 1; dz++)
         for (int dx = -1; dx <= 1; dx++)
-            ChunkDirty?.Invoke(new ChunkCoord(coord.X + dx, coord.Z + dz));
+            ChunkDirty?.Invoke(new ChunkCoord(coord.X + dx, coord.Z + dz), 0, WorldHeight - 1);
     }
 
     private void UnloadChunk(ChunkCoord coord)
@@ -585,7 +589,7 @@ public class VoxelWorld
                 chunk.SetRefinement(lx, by, lz, working, WorldHeight); // a full field removes the entry itself
             }
 
-            FireDirtyAround(cc, lx, lz);
+            FireDirtyAround(cc, lx, lz, by);
         }
 
         return anyChange;
@@ -751,27 +755,27 @@ public class VoxelWorld
 
         chunk.SetLocal(lx, wy, lz, id, WorldHeight);
 
-        FireDirtyAround(cc, lx, lz);
+        FireDirtyAround(cc, lx, lz, wy);
     }
 
     // Edits on edges and corners also affect the meshes of the (diagonal) neighbours, for face culling and AO
-    private void FireDirtyAround(ChunkCoord cc, int lx, int lz)
+    private void FireDirtyAround(ChunkCoord cc, int lx, int lz, int y)
     {
-        ChunkDirty?.Invoke(cc);
+        ChunkDirty?.Invoke(cc, y, y);
 
         bool west = lx == 0;
         bool east = lx == Chunk.Size - 1;
         bool north = lz == 0;
         bool south = lz == Chunk.Size - 1;
 
-        if (west) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z));
-        if (east) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z));
-        if (north) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z - 1));
-        if (south) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z + 1));
-        if (west && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z - 1));
-        if (west && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z + 1));
-        if (east && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z - 1));
-        if (east && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z + 1));
+        if (west) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z), y, y);
+        if (east) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z), y, y);
+        if (north) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z - 1), y, y);
+        if (south) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z + 1), y, y);
+        if (west && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z - 1), y, y);
+        if (west && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z + 1), y, y);
+        if (east && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z - 1), y, y);
+        if (east && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z + 1), y, y);
     }
 
     // --- Coordinate helpers ---

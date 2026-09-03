@@ -38,11 +38,11 @@ public sealed class SolarSystemGame : Game
     /// <summary>The crust caves into the breached core before anything is thrown outwards</summary>
     private const float CollapseSeconds = 0.5f;
 
-    private const float BlastSeconds = 2.8f;
+    private const float BlastSeconds = 1.5f;
     private const float DetonationSeconds = CollapseSeconds + BlastSeconds;
 
     /// <summary>The blast eats outwards in shells, because carving is a whole-volume sweep</summary>
-    private const int DetonationSteps = 16;
+    private const int DetonationSteps = 10;
 
     /// <summary>Roughly one chunk of rubble per this many destroyed voxels</summary>
     private const int VoxelsPerDebrisChunk = 420;
@@ -425,12 +425,15 @@ public sealed class SolarSystemGame : Game
         VoxelBody body = celestial.Body;
 
         // Measured against the visible surface, not the bounding sphere: scaled off the latter the
-        // planet is gone halfway through and the rest of the blast throws nothing
-        float fraction = step / (float)DetonationSteps;
+        // planet is gone halfway through and the rest of the blast throws nothing.
+        // The front eases out, so most of the planet leaves in the first moment instead of the
+        // last shells crumbling away one by one.
+        float linear = step / (float)DetonationSteps;
+        float fraction = 1f - (1f - linear) * (1f - linear);
         float radius = body.SurfaceRadius * 1.08f * fraction;
 
-        // Material from deep down is thrown hardest; the outer crust is only shouldered aside
-        float speed = 900f - 520f * fraction;
+        // Material from deep down is thrown hardest, but even the outer crust leaves in a hurry
+        float speed = 1600f - 500f * fraction;
 
         Vector3 centre = body.Position;
         Vector3 inherited = celestial.Velocity;
@@ -824,6 +827,6 @@ public sealed class SolarSystemGame : Game
         _renderer.Dispose();
         _shader.Unload();
 
-        Rlgl.SetClipPlanes(0.01, 1000.0); // back to the raylib default, or the next game inherits this
+        Rlgl.SetClipPlanes(Frustum.NearPlane, Frustum.FarPlane); // back to the engine range for the next game
     }
 }

@@ -61,8 +61,8 @@ public sealed class TuningMenu
             Value("Sun angle deg", () => settings.SunAngle, v => settings.SunAngle = v, defaults.SunAngle, 5f, 0f, 360f, "0"),
             Value("Time flow", () => settings.TimeFlow, v => settings.TimeFlow = v, defaults.TimeFlow, 0.25f, 0f, 20f, "0.00"),
             Value("Day length s", () => settings.DayLengthSeconds, v => settings.DayLengthSeconds = v, defaults.DayLengthSeconds, 15f, 30f, 1800f, "0"),
-            Value("Fog start", () => settings.FogStart, v => settings.FogStart = v, defaults.FogStart, 10f, 0f, 400f, "0"),
-            Value("Fog end", () => settings.FogEnd, v => settings.FogEnd = v, defaults.FogEnd, 10f, 20f, 600f, "0"),
+            Value("Fog start", () => settings.FogStart, v => settings.FogStart = v, defaults.FogStart, 20f, 0f, 900f, "0"),
+            Value("Fog end", () => settings.FogEnd, v => settings.FogEnd = v, defaults.FogEnd, 20f, 40f, 1200f, "0"),
 
             Section("CLOUDS"),
             Value("Coverage", () => settings.CloudCoverage, v => settings.CloudCoverage = v, defaults.CloudCoverage, 0.05f, 0f, 1f, "0.00"),

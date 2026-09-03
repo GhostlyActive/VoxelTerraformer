@@ -1,5 +1,6 @@
 using Raylib_cs;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using VoxelEngine.Config;
 using VoxelEngine.Effects;
 using VoxelEngine.Input;
@@ -58,6 +59,20 @@ public sealed class VoxelTerrainScene : IDisposable
 
     private TerrainMode _mode;
     private float _shake;
+
+    // Local lights live here rather than in the games: an explosion should light its own crater
+    // without every game rebuilding that machinery
+    private readonly List<TransientLight> _lights = new();
+    private readonly List<PointLight> _visibleLights = new();
+
+    private struct TransientLight
+    {
+        public Vector3 Position;
+        public float Range;
+        public Vector3 Color;
+        public float Life;
+        public float MaxLife;
+    }
 
     public VoxelWorld World { get; }
     public ChunkMeshManager Meshes { get; }
@@ -132,7 +147,8 @@ public sealed class VoxelTerrainScene : IDisposable
         Mode = options.Mode;
         Meshes.BuildAllNow();
 
-        _stars = options.Stars ? new StarField() : null;
+        // Beyond the load radius, or stars would hang in front of the terrain
+        _stars = options.Stars ? new StarField(distance: 1300f) : null;
         _clouds = options.Clouds ? new CloudLayer() : null;
 
         Camera = Player.CameraOnly();
@@ -143,6 +159,26 @@ public sealed class VoxelTerrainScene : IDisposable
 
     /// <summary>Shake the camera briefly, for instance after a nearby impact</summary>
     public void Shake(float strength) => _shake = MathF.Max(_shake, strength);
+
+    /// <summary>
+    /// A local light that fades out by itself. Only the nearest
+    /// <see cref="TerrainShader.MaxPointLights"/> reach the shader, so a busy moment keeps the ones
+    /// the player is actually standing in.
+    /// </summary>
+    public void AddLight(Vector3 position, float range, Vector3 color, float seconds)
+    {
+        const int budget = 48;
+        if (_lights.Count >= budget) _lights.RemoveAt(0);
+
+        _lights.Add(new TransientLight
+        {
+            Position = position,
+            Range = range,
+            Color = color,
+            Life = seconds,
+            MaxLife = MathF.Max(seconds, 0.001f),
+        });
+    }
 
     public void Update(float dt)
     {
@@ -166,6 +202,15 @@ public sealed class VoxelTerrainScene : IDisposable
         Vector3 light = DayNight.AmbientColor + DayNight.SunlightColor * 0.8f;
         Particles.LightScale = Math.Clamp((light.X + light.Y + light.Z) / 3f, 0.15f, 1.1f);
         Particles.Update(World, dt);
+
+        for (int i = _lights.Count - 1; i >= 0; i--)
+        {
+            TransientLight flash = _lights[i];
+            flash.Life -= dt;
+
+            if (flash.Life <= 0f) _lights.RemoveAt(i);
+            else _lights[i] = flash;
+        }
 
         ApplyShake(dt);
     }
@@ -238,6 +283,9 @@ public sealed class VoxelTerrainScene : IDisposable
 
         Particles.SpawnExplosion(center, debris, power);
 
+        // The blast lights the crater it just dug
+        AddLight(center, radius * 7f, new Vector3(1.6f, 0.9f, 0.4f), 0.55f);
+
         // An explosion must not treat the player as an obstacle: pass an empty box instead of theirs
         var noBounds = new BoundingBox(new Vector3(float.MaxValue), new Vector3(float.MaxValue));
         World.SculptBlob(center, radius, add: false, edge: radius * 0.36f, BlockRegistry.Stone, noBounds);
@@ -289,6 +337,7 @@ public sealed class VoxelTerrainScene : IDisposable
         _shader.FogStart = _settings.FogStart;
         _shader.FogEnd = MathF.Max(_settings.FogEnd, _settings.FogStart + 10f);
         _shader.SetFrame(DayNight, Camera.Position);
+        _shader.SetPointLights(NearestLights());
 
         Frustum frustum = Frustum.FromCamera(
             Camera, Raylib.GetScreenWidth() / (float)Raylib.GetScreenHeight());
@@ -305,13 +354,30 @@ public sealed class VoxelTerrainScene : IDisposable
             _clouds.Coverage = _settings.CloudCoverage;
             _clouds.Height = _settings.CloudHeight;
             _clouds.DriftSpeed = _settings.CloudDrift;
-            _clouds.Draw(Camera, ElapsedTime, DayNight.Daylight01, Player.Position);
+            _clouds.Draw(Camera, frustum, ElapsedTime, DayNight.Daylight01, Player.Position);
         }
 
         if (!ShowDebugGeometry) return;
 
         GridRenderer.DrawFromOrigin(256, 1.0f);
         Meshes.DrawChunkBounds();
+    }
+
+    /// <summary>The lights closest to the camera, dimmed by how much life they have left</summary>
+    private ReadOnlySpan<PointLight> NearestLights()
+    {
+        _visibleLights.Clear();
+        if (_lights.Count == 0) return ReadOnlySpan<PointLight>.Empty;
+
+        foreach (TransientLight light in _lights)
+            _visibleLights.Add(new PointLight(light.Position, light.Range, light.Color * (light.Life / light.MaxLife)));
+
+        Vector3 eye = Camera.Position;
+        _visibleLights.Sort((a, b) =>
+            Vector3.DistanceSquared(a.Position, eye).CompareTo(Vector3.DistanceSquared(b.Position, eye)));
+
+        int count = Math.Min(_visibleLights.Count, TerrainShader.MaxPointLights);
+        return CollectionsMarshal.AsSpan(_visibleLights)[..count];
     }
 
     public void Dispose()

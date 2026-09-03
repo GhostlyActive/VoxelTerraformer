@@ -18,6 +18,11 @@ public interface ITerrainGenerator
 /// slow region noise decides where you get plains, mountains, stepped mesas or canyons, and the
 /// sample position itself is warped so nothing runs in straight noise-shaped bands.
 ///
+/// The surface is a height per column, but the world is not: caves are carved out of the rock
+/// below it and spires grow out of it, so the result has tunnels, arches and overhangs rather than
+/// a single skin over solid ground. Set <see cref="Caves"/> and <see cref="Spires"/> to 0 for the
+/// plain heightmap.
+///
 /// All amplitudes are block heights, all scales frequencies per block. The mesa and canyon
 /// strengths follow <see cref="ContinentAmplitude"/>, so a flatter preset stays flat everywhere
 /// instead of tearing gorges into a gentle landscape.
@@ -44,6 +49,32 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
     /// <summary>0 turns off regions entirely and gives one uniform landscape everywhere</summary>
     public float Variety { get; init; } = 1f;
 
+    /// <summary>
+    /// How much rock the cave network takes out, 0..1. Tunnels appear where two noise fields are
+    /// both near their middle — the intersection of two sheets is a tube, which is what gives
+    /// winding passages instead of blobs.
+    /// </summary>
+    public float Caves { get; init; } = 1f;
+
+    public float CaveScale { get; init; } = 0.055f;
+
+    /// <summary>
+    /// Blocks of rock left between a tunnel and the surface, so the ground is not open everywhere.
+    /// It thins out in patches, which is what puts cave mouths and sinkholes into the landscape —
+    /// a cave with no way in might as well not be there.
+    /// </summary>
+    public int CaveRoof { get; init; } = 5;
+
+    public float CaveEntranceScale { get; init; } = 0.01f;
+
+    /// <summary>How much rock stands up out of the surface as towers and arches, 0..1</summary>
+    public float Spires { get; init; } = 1f;
+
+    public float SpireScale { get; init; } = 0.07f;
+
+    /// <summary>Blocks a spire may reach above the surface</summary>
+    public int SpireHeight { get; init; } = 12;
+
     public byte Block { get; init; } = BlockRegistry.Terrain;
 
     /// <summary>Size of the steps in mesa country, in blocks</summary>
@@ -64,10 +95,22 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
             int worldX = originX + x;
             int worldZ = originZ + z;
 
-            int top = Math.Clamp(HeightAt(worldX, worldZ), 1, worldHeight - 2);
+            int surface = Math.Clamp(HeightAt(worldX, worldZ), 1, worldHeight - 2);
+            int top = Spires > 0f ? Math.Min(worldHeight - 2, surface + SpireHeight) : surface;
+
+            // Spires only grow on top of something, so they read as towers and arches rather than
+            // blocks hanging in the air
+            bool belowSolid = true;
 
             for (int y = 0; y <= top; y++)
-                blocks[Chunk.Index(x, y, z)] = Block;
+            {
+                bool solid = y <= surface
+                    ? !IsCave(worldX, y, worldZ, surface)
+                    : belowSolid && IsSpire(worldX, y, worldZ, surface);
+
+                if (solid) blocks[Chunk.Index(x, y, z)] = Block;
+                belowSolid = solid;
+            }
         }
     }
 
@@ -128,6 +171,46 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
 
         float terraced = MathF.Round(height / TerraceStep) * TerraceStep;
         return height + (terraced - height) * mesa;
+    }
+
+    /// <summary>
+    /// A voxel sits in a tunnel when both noise fields are close to their middle. The first test
+    /// rejects the vast majority, so the second sample is only paid for near a cave.
+    /// </summary>
+    private bool IsCave(int x, int y, int z, int surface)
+    {
+        if (Caves <= 0f) return false;
+        if (y < 2 || y > surface - RoofAt(x, z)) return false; // keep bedrock and a roof of rock
+
+        float width = 0.075f * Caves;
+
+        // The vertical scale is doubled so passages come out wider than they are tall
+        float first = Noise.Value3D(x * CaveScale, y * CaveScale * 2f, z * CaveScale, Seed + 5100);
+        if (MathF.Abs(first - 0.5f) > width) return false;
+
+        float second = Noise.Value3D(x * CaveScale, y * CaveScale * 2f, z * CaveScale, Seed + 5200);
+        return MathF.Abs(second - 0.5f) <= width;
+    }
+
+    /// <summary>
+    /// How much rock covers the tunnels here. Zero in patches, which is where a passage breaks
+    /// through and becomes an entrance.
+    /// </summary>
+    private int RoofAt(int x, int z)
+    {
+        float opening = Noise.Value2D(x * CaveEntranceScale, z * CaveEntranceScale, Seed + 5300);
+
+        return (int)MathF.Round(CaveRoof * (1f - Noise.SmoothStep(0.60f, 0.84f, opening)));
+    }
+
+    /// <summary>Rock standing above the surface; the threshold rises with height so towers taper</summary>
+    private bool IsSpire(int x, int y, int z, int surface)
+    {
+        float above = (y - surface) / (float)SpireHeight;
+        float threshold = 0.56f + above * 0.34f;
+
+        return Noise.Value3D(x * SpireScale, y * SpireScale * 1.5f, z * SpireScale, Seed + 6100)
+               > threshold / MathF.Max(0.001f, Spires);
     }
 
     /// <summary>Ridged noise cutting gorges into the low, dry regions</summary>

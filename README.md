@@ -90,6 +90,16 @@ registry.Add("MyGame", "My Game", "One-line description", () => new MyGame());
 
 It shows up under **ESC → Games**. See [Games/README.md](Games/README.md) for the details.
 
+## Tests
+
+```
+dotnet test Tests/Tests.csproj
+```
+
+24 tests over the engine's pure logic: noise determinism, the sub-voxel field's invariants,
+terrain generation, voxel-body carving and the day cycle. Rendering and audio need a GL context
+and are covered by `--smoke` instead.
+
 ---
 
 ## Controls
@@ -114,6 +124,9 @@ The pause menu lists the controls of whichever game is running.
 ---
 
 ## Running it
+
+Grab a build from [Releases](../../releases) — they are self-contained, so no .NET install is
+needed. Or from source:
 
 ```
 dotnet run -c Release --project Terraformer.csproj

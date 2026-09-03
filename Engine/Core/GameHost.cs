@@ -1,6 +1,7 @@
 using Raylib_cs;
 using VoxelEngine.Audio;
 using VoxelEngine.Config;
+using VoxelEngine.Rendering;
 using VoxelEngine.UI;
 
 namespace VoxelEngine.Core;
@@ -60,10 +61,18 @@ public sealed class GameHost : IDisposable
     {
         bool smokeTest = _options.SmokeFrames > 0;
 
+        // Multisampling before the window exists. At this view distance a distant block is a pixel
+        // or two wide, and without it those edges crawl as soon as the player moves.
+        Raylib.SetConfigFlags(ConfigFlags.Msaa4xHint);
+
         Raylib.InitWindow(_options.Width, _options.Height, _options.WindowTitle);
         Raylib.SetTargetFPS(_options.TargetFps);
         Raylib.SetExitKey(KeyboardKey.Null); // ESC belongs to the pause menu, not to the window
         Raylib.InitAudioDevice();
+
+        // Raylib's defaults waste the depth buffer on the first centimetres, which flickers on
+        // distant terrain. A game that needs a different range restores these in Unload.
+        Rlgl.SetClipPlanes(Frustum.NearPlane, Frustum.FarPlane);
 
         if (smokeTest) Raylib.SetMousePosition(_options.Width / 2, _options.Height / 2); // or the first mouse delta twists the camera
         else Raylib.DisableCursor();

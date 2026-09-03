@@ -34,6 +34,21 @@ public static class SmoothChunkMesher
         int worldHeight,
         int worldX,
         int worldZ)
+        => Build(padded, refinements, worldHeight, worldX, worldZ, 0, worldHeight);
+
+    /// <summary>
+    /// Meshes only the blocks in [yStart, yEnd). Every block emits its own cells, so sections
+    /// partition a column without seams or duplicated geometry — but a block reads its 3x3x3
+    /// neighbourhood, so the caller has to dirty one section beyond an edit.
+    /// </summary>
+    public static ChunkMeshData Build(
+        byte[] padded,
+        Dictionary<int, byte[]> refinements,
+        int worldHeight,
+        int worldX,
+        int worldZ,
+        int yStart,
+        int yEnd)
     {
         var vertices = new List<float>(16384);
         var normals = new List<float>(16384);
@@ -50,7 +65,7 @@ public static class SmoothChunkMesher
         Span<Vector3> edgePosition = stackalloc Vector3[12];
         Span<Vector3> edgeNormal = stackalloc Vector3[12];
 
-        for (int y = 0; y < worldHeight; y++)
+        for (int y = yStart; y < yEnd; y++)
         for (int z = 0; z < Chunk.Size; z++)
         for (int x = 0; x < Chunk.Size; x++)
         {

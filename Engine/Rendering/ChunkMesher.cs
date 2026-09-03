@@ -47,12 +47,17 @@ public static class ChunkMesher
     private static readonly int[] _quadOrderFlipped = { 1, 2, 3, 1, 3, 0 };
 
     public static ChunkMeshData Build(byte[] padded, Dictionary<int, byte[]> refinements, int worldHeight, int worldX, int worldZ)
+        => Build(padded, refinements, worldHeight, worldX, worldZ, 0, worldHeight);
+
+    /// <summary>Meshes only the blocks in [yStart, yEnd); sections partition a column seamlessly</summary>
+    public static ChunkMeshData Build(byte[] padded, Dictionary<int, byte[]> refinements, int worldHeight,
+        int worldX, int worldZ, int yStart, int yEnd)
     {
         var vertices = new List<float>(24576);
         var normals = new List<float>(24576);
         var colors = new List<byte>(32768);
 
-        for (int y = 0; y < worldHeight; y++)
+        for (int y = yStart; y < yEnd; y++)
         for (int z = 0; z < Chunk.Size; z++)
         for (int x = 0; x < Chunk.Size; x++)
         {
