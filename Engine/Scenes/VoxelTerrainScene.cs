@@ -7,6 +7,7 @@ using VoxelEngine.Core;
 using VoxelEngine.Effects;
 using VoxelEngine.Input;
 using VoxelEngine.Rendering;
+using VoxelEngine.UI;
 using VoxelEngine.World;
 
 namespace VoxelEngine.Scenes;
@@ -45,6 +46,21 @@ public sealed record VoxelTerrainOptions
 
     /// <summary>Chunk radius loaded up front; without it the player drops through empty space</summary>
     public int PreloadRadius { get; init; } = 3;
+
+    /// <summary>Blocks from bedrock to the sky, a multiple of 32. Tall worlds get real mountains and deep caves.</summary>
+    public int WorldHeight { get; init; } = VoxelWorld.DefaultHeight;
+
+    /// <summary>Put the spawn on the ground instead of at the given height, once the terrain exists</summary>
+    public bool SpawnOnSurface { get; init; } = true;
+
+    /// <summary>The scene's dials; null loads the ones saved for this game, or the defaults</summary>
+    public TerrainSettings? Settings { get; init; }
+
+    /// <summary>Upper bound for the engine's view distance in this scene; a cave lit by a lantern needs no kilometre of terrain</summary>
+    public int MaxViewDistanceChunks { get; init; } = VoxelWorld.MaxViewDistance;
+
+    /// <summary>Jump held in the air fires a jetpack; the tank refills on the ground</summary>
+    public bool Jetpack { get; init; }
 }
 
 /// <summary>
@@ -55,9 +71,12 @@ public sealed record VoxelTerrainOptions
 /// </summary>
 public sealed class VoxelTerrainScene : IDisposable
 {
-    private readonly EngineSettings _settings;
+    private readonly EngineSettings _engine;
+    private readonly TerrainSettings _settings;
     private readonly FrameProfiler? _profiler;
     private readonly AudioBank? _audio;
+    private readonly TuningMenu? _tuning;
+    private readonly List<TuningSection> _tuningSections = new();
     private readonly TerrainShader _shader;
     private readonly StarField? _stars;
     private readonly CloudLayer? _clouds;
@@ -75,6 +94,10 @@ public sealed class VoxelTerrainScene : IDisposable
     // without every game rebuilding that machinery
     private readonly List<TransientLight> _lights = new();
     private readonly List<PointLight> _visibleLights = new();
+    private readonly int _maxViewDistance;
+
+    /// <summary>A light that travels with the camera: a lantern, a headlamp. Null for none.</summary>
+    public PointLight? HeadLight { get; set; }
 
     private struct TransientLight
     {
@@ -84,6 +107,9 @@ public sealed class VoxelTerrainScene : IDisposable
         public float Life;
         public float MaxLife;
     }
+
+    /// <summary>The scene's dials: pace, tool, day, fog, clouds. Live in the tuning menu, saved per game.</summary>
+    public TerrainSettings Settings => _settings;
 
     public VoxelWorld World { get; }
     public ChunkMeshManager Meshes { get; }
@@ -151,20 +177,23 @@ public sealed class VoxelTerrainScene : IDisposable
     }
 
     public VoxelTerrainScene(GameContext context, VoxelTerrainOptions options)
-        : this(context.Settings, options with { Storage = options.Storage ?? context.OpenStorage(options.SaveSlot) },
-            context.Profiler, context.Audio)
     {
-    }
+        _engine = context.Settings;
+        _profiler = context.Profiler;
+        _audio = context.Audio;
+        _tuning = context.Tuning;
+        _maxViewDistance = Math.Max(2, options.MaxViewDistanceChunks);
 
-    public VoxelTerrainScene(EngineSettings settings, VoxelTerrainOptions options, FrameProfiler? profiler = null, AudioBank? audio = null)
-    {
-        _settings = settings;
-        _profiler = profiler;
-        _audio = audio;
+        // The scene's dials are the game's: saved under its id, so a pinned sun in one game
+        // never moves the sun of another
+        string settingsKey = $"{context.Id}/Terrain";
+        _settings = options.Settings ?? context.Store.Load<TerrainSettings>(settingsKey);
+        RegisterTuning(() => context.Store.Save(settingsKey, _settings), options.Jetpack);
 
-        Storage = options.Storage;
-        World = new VoxelWorld(Storage, options.Generator, settings.ViewDistanceChunks) { BuildMaterial = options.BuildMaterial };
-        Player = new PlayerController(options.Spawn, settings);
+        Storage = options.Storage ?? context.OpenStorage(options.SaveSlot, options.WorldHeight);
+        World = new VoxelWorld(Storage, options.Generator, Math.Min(_engine.ViewDistanceChunks, _maxViewDistance), options.WorldHeight) { BuildMaterial = options.BuildMaterial };
+        TerrainColors.WorldHeight = options.WorldHeight;
+        Player = new PlayerController(options.Spawn, _engine, _settings) { JetpackEnabled = options.Jetpack };
 
         // The mesh manager listens for chunks becoming meshable, so it has to exist before the
         // first chunk does
@@ -174,20 +203,23 @@ public sealed class VoxelTerrainScene : IDisposable
         // Load the spawn area up front so the player lands on solid ground
         World.EnsureAround(options.Spawn, options.PreloadRadius);
 
+        if (options.SpawnOnSurface)
+            Player.Teleport(new Vector3(options.Spawn.X, SurfaceHeight(options.Spawn.X, options.Spawn.Z) + 0.5f, options.Spawn.Z));
+
         DayNight = new DayNightCycle
         {
             Center = options.Spawn,
-            DayLengthSeconds = settings.DayLengthSeconds,
-            OrbitRadius = 300f,
+            DayLengthSeconds = _settings.DayLengthSeconds,
+            OrbitRadius = 900f,
             DrawSunAndMoon = options.SunAndMoon,
             AutoAdvance = options.RunDayNight,
             SunAngleDegrees = options.SunAngleDegrees,
-            TimeScale = settings.TimeFlow,
+            TimeScale = _settings.TimeFlow,
         };
 
         // The game decides where its sun starts; the menu takes over from the first change on
-        _menuSunAngle = settings.SunAngle;
-        _menuTimeFlow = settings.TimeFlow;
+        _menuSunAngle = _settings.SunAngle;
+        _menuTimeFlow = _settings.TimeFlow;
 
         Particles = new ParticleSystem();
         World.BlockBroken += Particles.SpawnBlockBreak;
@@ -200,6 +232,7 @@ public sealed class VoxelTerrainScene : IDisposable
             _audio.Define("engine.dig", new SfxShape(0.12f, 260f, 90f, 0.8f, 14f));
             _audio.Define("engine.place", new SfxShape(0.10f, 180f, 420f, 0.3f, 12f));
             _audio.Define("engine.mode", new SfxShape(0.35f, 320f, 900f, 0.05f, 6f));
+            _audio.Define("engine.jet", new SfxShape(0.16f, 150f, 120f, 0.95f, 1.5f));
             World.BlockBroken += (_, _) => _audio.Play("engine.dig", 0.35f, 0.9f + Random.Shared.NextSingle() * 0.2f);
             World.BlockPlaced += (_, _) => _audio.Play("engine.place", 0.3f, 0.95f + Random.Shared.NextSingle() * 0.1f);
         }
@@ -208,12 +241,67 @@ public sealed class VoxelTerrainScene : IDisposable
         Mode = options.Mode;
 
         Camera = Player.CameraOnly();
-        Meshes.DetailRadius = settings.DetailRadiusChunks;
+        Meshes.DetailRadius = _engine.DetailRadiusChunks;
         Meshes.BuildAllNow(Camera.Position);
 
         // Just inside the far plane, so the stars hang behind even the largest view distance
         _stars = options.Stars ? new StarField(distance: Frustum.FarPlane - 100f) : null;
         _clouds = options.Clouds ? new CloudLayer() : null;
+    }
+
+    private void RegisterTuning(Action save, bool jetpack)
+    {
+        if (_tuning == null) return;
+
+        var defaults = new TerrainSettings();
+        TerrainSettings s = _settings;
+
+        TuningSection move = _tuning.AddSection("MOVE", save)
+            .Value("Walk speed", () => s.WalkSpeed, v => s.WalkSpeed = v, defaults.WalkSpeed, 0.5f, 1f, 30f, "0.0")
+            .Value("Sprint multiplier", () => s.SprintMultiplier, v => s.SprintMultiplier = v, defaults.SprintMultiplier, 0.1f, 1f, 4f, "0.0")
+            .Value("Jump power", () => s.JumpSpeed, v => s.JumpSpeed = v, defaults.JumpSpeed, 0.5f, 2f, 30f, "0.0")
+            .Value("Gravity", () => s.Gravity, v => s.Gravity = v, defaults.Gravity, 1f, 2f, 60f, "0");
+
+        if (jetpack)
+            move.Value("Jetpack thrust", () => s.JetpackThrust, v => s.JetpackThrust = v, defaults.JetpackThrust, 2f, 10f, 80f, "0")
+                .Value("Jetpack fuel s", () => s.JetpackFuelSeconds, v => s.JetpackFuelSeconds = v, defaults.JetpackFuelSeconds, 0.5f, 0.5f, 12f, "0.0");
+
+        _tuningSections.Add(move);
+
+        _tuningSections.Add(_tuning.AddSection("TOOL")
+            .Value("Build reach", () => s.BuildReach, v => s.BuildReach = v, defaults.BuildReach, 1f, 2f, 60f, "0")
+            .Value("Sculpt radius", () => s.SculptRadius, v => s.SculptRadius = v, defaults.SculptRadius, 0.1f, 0.25f, 2.5f, "0.0")
+            .Value("Brush softness", () => s.BrushSoftness, v => s.BrushSoftness = v, defaults.BrushSoftness, 0.1f, 0f, 1.6f, "0.0")
+            .Value("Preview hold s", () => s.PreviewHold, v => s.PreviewHold = v, defaults.PreviewHold, 0.25f, 0f, 5f, "0.00")
+            .Toggle("Brush always visible", () => s.ShowBrushAlways, v => s.ShowBrushAlways = v, defaults.ShowBrushAlways)
+            .Value("Sculpt grid", () => s.SculptGridStrength, v => s.SculptGridStrength = v, defaults.SculptGridStrength, 0.25f, 0f, 1f, "0.00"));
+
+        _tuningSections.Add(_tuning.AddSection("WORLD")
+            .Value("Sun angle deg", () => s.SunAngle, v => s.SunAngle = v, defaults.SunAngle, 5f, 0f, 360f, "0")
+            .Value("Time flow", () => s.TimeFlow, v => s.TimeFlow = v, defaults.TimeFlow, 0.25f, 0f, 20f, "0.00")
+            .Value("Day length s", () => s.DayLengthSeconds, v => s.DayLengthSeconds = v, defaults.DayLengthSeconds, 15f, 30f, 1800f, "0")
+            .Value("Fog start", () => s.FogStart, v => s.FogStart = v, defaults.FogStart, 20f, 0f, 1400f, "0")
+            .Value("Fog end", () => s.FogEnd, v => s.FogEnd = v, defaults.FogEnd, 20f, 40f, 1500f, "0"));
+
+        _tuningSections.Add(_tuning.AddSection("CLOUDS")
+            .Value("Coverage", () => s.CloudCoverage, v => s.CloudCoverage = v, defaults.CloudCoverage, 0.05f, 0f, 1f, "0.00")
+            .Value("Height", () => s.CloudHeight, v => s.CloudHeight = v, defaults.CloudHeight, 10f, 40f, 400f, "0")
+            .Value("Drift speed", () => s.CloudDrift, v => s.CloudDrift = v, defaults.CloudDrift, 0.2f, 0f, 12f, "0.0"));
+    }
+
+    // Short bursts of hiss overlap into a steady roar; the bank has no looping sounds
+    private float _jetSoundCooldown;
+
+    private void UpdateJetpackExhaust(float dt)
+    {
+        _jetSoundCooldown = MathF.Max(0f, _jetSoundCooldown - dt);
+        if (!Player.JetpackBurning) return;
+
+        Particles.SpawnSmoke(Player.Position + new Vector3(0f, 0.2f, 0f), new Vector3(0f, -7f, 0f), 2, 0.6f);
+
+        if (_jetSoundCooldown > 0f || _audio == null) return;
+        _audio.Play("engine.jet", 0.28f, 0.9f + Random.Shared.NextSingle() * 0.2f);
+        _jetSoundCooldown = 0.1f;
     }
 
     /// <summary>Next voxel mode (Blocks → Sculpt → Smooth → Blocks)</summary>
@@ -223,13 +311,13 @@ public sealed class VoxelTerrainScene : IDisposable
     public void Shake(float strength) => _shake = MathF.Max(_shake, strength);
 
     /// <summary>
-    /// A local light that fades out by itself. Only the nearest
-    /// <see cref="TerrainShader.MaxPointLights"/> reach the shader, so a busy moment keeps the ones
-    /// the player is actually standing in.
+    /// A local light that fades out by itself, or stays for good with an infinite duration (a
+    /// placed lamp). Only the nearest <see cref="TerrainShader.MaxPointLights"/> reach the shader,
+    /// so a busy moment keeps the ones the player is actually standing in.
     /// </summary>
     public void AddLight(Vector3 position, float range, Vector3 color, float seconds)
     {
-        const int budget = 48;
+        const int budget = 160;
         if (_lights.Count >= budget) _lights.RemoveAt(0);
 
         _lights.Add(new TransientLight
@@ -247,10 +335,11 @@ public sealed class VoxelTerrainScene : IDisposable
         ElapsedTime += dt;
 
         if (AllowPlayerControl) Camera = Player.Update(World, dt); else Camera = Player.CameraOnly();
+        UpdateJetpackExhaust(dt);
 
         // Stream the world around the player; the chunks themselves are built on worker threads
-        World.SetViewDistance(_settings.ViewDistanceChunks);
-        Meshes.DetailRadius = _settings.DetailRadiusChunks;
+        World.SetViewDistance(Math.Min(_engine.ViewDistanceChunks, _maxViewDistance));
+        Meshes.DetailRadius = _engine.DetailRadiusChunks;
 
         long streamStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         int loadedBefore = World.LoadedChunkCount;
@@ -376,7 +465,7 @@ public sealed class VoxelTerrainScene : IDisposable
         int blockX = (int)MathF.Floor(x);
         int blockZ = (int)MathF.Floor(z);
 
-        for (int y = VoxelWorld.WorldHeight - 1; y > 0; y--)
+        for (int y = World.Height - 1; y > 0; y--)
             if (BlockRegistry.IsSolid(World.GetBlock(blockX, y, blockZ)))
                 return y + 1f;
 
@@ -450,18 +539,32 @@ public sealed class VoxelTerrainScene : IDisposable
         Meshes.DrawChunkBounds();
     }
 
-    /// <summary>The lights closest to the camera, dimmed by how much life they have left</summary>
+    /// <summary>Is there a light within <paramref name="radius"/> of a point? Keeps a stroke of lamps from stacking lights.</summary>
+    public bool HasLightNear(Vector3 position, float radius)
+    {
+        foreach (TransientLight light in _lights)
+            if (Vector3.DistanceSquared(light.Position, position) <= radius * radius) return true;
+
+        return false;
+    }
+
+    /// <summary>The lights closest to the camera, dimmed by how much life they have left; the head light always comes first</summary>
     private ReadOnlySpan<PointLight> NearestLights()
     {
         _visibleLights.Clear();
-        if (_lights.Count == 0) return ReadOnlySpan<PointLight>.Empty;
+        if (_lights.Count == 0 && HeadLight == null) return ReadOnlySpan<PointLight>.Empty;
 
         foreach (TransientLight light in _lights)
-            _visibleLights.Add(new PointLight(light.Position, light.Range, light.Color * (light.Life / light.MaxLife)));
+        {
+            float intensity = float.IsPositiveInfinity(light.MaxLife) ? 1f : light.Life / light.MaxLife;
+            _visibleLights.Add(new PointLight(light.Position, light.Range, light.Color * intensity));
+        }
 
         Vector3 eye = Camera.Position;
         _visibleLights.Sort((a, b) =>
             Vector3.DistanceSquared(a.Position, eye).CompareTo(Vector3.DistanceSquared(b.Position, eye)));
+
+        if (HeadLight is { } head) _visibleLights.Insert(0, head with { Position = eye });
 
         int count = Math.Min(_visibleLights.Count, TerrainShader.MaxPointLights);
         return CollectionsMarshal.AsSpan(_visibleLights)[..count];
@@ -469,6 +572,10 @@ public sealed class VoxelTerrainScene : IDisposable
 
     public void Dispose()
     {
+        foreach (TuningSection section in _tuningSections)
+            _tuning?.RemoveSection(section);
+        _tuningSections.Clear();
+
         Meshes.Dispose();
         World.Dispose();
         _clouds?.Dispose();

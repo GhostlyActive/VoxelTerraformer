@@ -51,12 +51,18 @@ tuning values (`Context.Settings`), sounds (`Context.Audio`) and the host (`Cont
 
 `new VoxelTerrainScene(Context, new VoxelTerrainOptions { ... })` is a complete world: streamed
 chunks built on worker threads, three levels of detail, the three voxel modes with the switch
-wave, a player with sub-voxel collision, day cycle, sky, clouds and particles. Set the spawn,
-the generator, the mode, the save slot and the material the player builds with, then call
-`Update`, `PumpMeshUploads`, `DrawBackground` and `Draw`.
+wave, a player with sub-voxel collision and an optional jetpack, day cycle, sky, clouds and
+particles. Set the spawn, the generator, the mode, the save slot and the material the player
+builds with, then call `Update`, `PumpMeshUploads`, `DrawBackground` and `Draw`.
 
 Materials: `BlockRegistry.Register(name, colour, ...)` in `Load`. Registering the same name again
 returns the same id, so a game can register every time it starts.
+
+Dials: `Context.Tuning.AddSection("MY GAME", save)` puts the game's own values into the menu on
+**M**, next to the scene's; `Context.Store.Load<T>(key)` / `Save` keep them (or anything else,
+such as a leaderboard) in the product's settings file. Remove the section in `Unload`. Cave Dive,
+Rocket Storm and Solar System show the pattern. Display, mouse and view distance apply to every
+game and live in the pause menu under **Settings**, owned by the host.
 
 ## Sounds
 
@@ -70,11 +76,12 @@ If `Assets/Sounds/explosion.wav` exists, the file is used. If it does not, the e
 stand-in from the `SfxShape` you passed — so a game has sound without shipping any audio files, and
 dropping a file in later replaces the stand-in without a code change.
 
-The terrain scene defines `engine.dig`, `engine.place` and `engine.mode` the same way; a game can
-ship files under those names too.
+The terrain scene defines `engine.dig`, `engine.place`, `engine.mode` and `engine.jet` the same
+way; a game can ship files under those names too.
 
 | Game | expected files |
 | --- | --- |
-| `RocketStorm` | `launch`, `explosion`, `hit` |
-| `SolarSystem` | `shot`, `impact`, `bump`, `detonate` |
+| `RocketStorm` | `launch`, `explosion`, `hit`, `flak`, `shotdown` |
+| `SolarSystem` | `shot`, `impact`, `bump`, `detonate`, `entry` |
+| `CaveDive` | `crystal` |
 | `FreeWalk` | — |

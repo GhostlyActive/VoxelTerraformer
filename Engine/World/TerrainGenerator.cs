@@ -23,9 +23,12 @@ public interface ITerrainGenerator
 /// a single skin over solid ground. Set <see cref="Caves"/> and <see cref="Spires"/> to 0 for the
 /// plain heightmap.
 ///
-/// All amplitudes are block heights, all scales frequencies per block. The mesa and canyon
-/// strengths follow <see cref="ContinentAmplitude"/>, so a flatter preset stays flat everywhere
-/// instead of tearing gorges into a gentle landscape.
+/// All amplitudes are block heights for a world 64 blocks high, all scales frequencies per
+/// block. A taller world stretches the amplitudes with its height and widens the features by the
+/// square root of that, so a 256-block world gets mountains four times as tall and twice as wide,
+/// and caves all the way down. The mesa and canyon strengths follow
+/// <see cref="ContinentAmplitude"/>, so a flatter preset stays flat everywhere instead of tearing
+/// gorges into a gentle landscape.
 /// </summary>
 public sealed class DefaultTerrainGenerator : ITerrainGenerator
 {
@@ -59,6 +62,12 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
     public float CaveScale { get; init; } = 0.055f;
 
     /// <summary>
+    /// Blocks below the surface the cave network reaches. Deeper rock stays solid, which is what
+    /// keeps a tall world in memory: a slab of pure rock costs nothing, a slab with tunnels 32 KB.
+    /// </summary>
+    public int CaveDepth { get; init; } = 120;
+
+    /// <summary>
     /// Blocks of rock left between a tunnel and the surface, so the ground is not open everywhere.
     /// It thins out in patches, which is what puts cave mouths and sinkholes into the landscape —
     /// a cave with no way in might as well not be there.
@@ -89,14 +98,18 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
         int originX = coord.X * Chunk.Size;
         int originZ = coord.Z * Chunk.Size;
 
+        float vertical = worldHeight / 64f;
+        float horizontal = 1f / MathF.Sqrt(vertical);
+        int spireHeight = (int)(SpireHeight * MathF.Sqrt(vertical));
+
         for (int x = 0; x < Chunk.Size; x++)
         for (int z = 0; z < Chunk.Size; z++)
         {
             int worldX = originX + x;
             int worldZ = originZ + z;
 
-            int surface = Math.Clamp(HeightAt(worldX, worldZ), 1, worldHeight - 2);
-            int top = Spires > 0f ? Math.Min(worldHeight - 2, surface + SpireHeight) : surface;
+            int surface = Math.Clamp(HeightAt(worldX, worldZ, vertical, horizontal), 1, worldHeight - 2);
+            int top = Spires > 0f ? Math.Min(worldHeight - 2, surface + spireHeight) : surface;
 
             // Spires only grow on top of something, so they read as towers and arches rather than
             // blocks hanging in the air
@@ -106,7 +119,7 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
             {
                 bool solid = y <= surface
                     ? !IsCave(worldX, y, worldZ, surface)
-                    : belowSolid && IsSpire(worldX, y, worldZ, surface);
+                    : belowSolid && IsSpire(worldX, y, worldZ, surface, spireHeight);
 
                 if (solid) blocks[Chunk.Index(x, y, z)] = Block;
                 belowSolid = solid;
@@ -115,20 +128,20 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
     }
 
     /// <summary>Terrain height at a world column, before clamping</summary>
-    private int HeightAt(int worldX, int worldZ)
+    private int HeightAt(int worldX, int worldZ, float vertical, float horizontal)
     {
         // Domain warping: sampling a displaced position bends coastlines and ridges into
         // meandering shapes instead of the smooth blobs plain fBm produces
-        float warpX = Noise.Value2D(worldX * WarpScale, worldZ * WarpScale, Seed + 555) - 0.5f;
-        float warpZ = Noise.Value2D(worldX * WarpScale + 31f, worldZ * WarpScale - 17f, Seed + 556) - 0.5f;
+        float warpX = Noise.Value2D(worldX * WarpScale * horizontal, worldZ * WarpScale * horizontal, Seed + 555) - 0.5f;
+        float warpZ = Noise.Value2D(worldX * WarpScale * horizontal + 31f, worldZ * WarpScale * horizontal - 17f, Seed + 556) - 0.5f;
 
-        float sampleX = worldX + warpX * WarpStrength;
-        float sampleZ = worldZ + warpZ * WarpStrength;
+        float sampleX = (worldX + warpX * WarpStrength / horizontal) * horizontal;
+        float sampleZ = (worldZ + warpZ * WarpStrength / horizontal) * horizontal;
 
         // The character of the land, changing over hundreds of blocks
         float region = Variety <= 0f
             ? 0.5f
-            : Noise.Fbm2D(worldX * RegionScale, worldZ * RegionScale, Seed + 3000, 3, 0.5f, 2f);
+            : Noise.Fbm2D(worldX * RegionScale * horizontal, worldZ * RegionScale * horizontal, Seed + 3000, 3, 0.5f, 2f);
 
         float continents = Noise.Fbm2D(sampleX * ContinentScale, sampleZ * ContinentScale, Seed, 4, 0.5f, 2f);
         float mountains = Noise.RidgeFbm2D(sampleX * MountainScale, sampleZ * MountainScale, Seed + 9000, 5, 0.5f, 2f);
@@ -143,15 +156,15 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
             Noise.SmoothStep(0.42f, 0.78f, region);
 
         float height =
-            BaseHeight +
-            shaped * ContinentAmplitude +
-            mountains * MountainAmplitude * mountainMask +
-            (detail - 0.5f) * 2f * DetailAmplitude;
+            BaseHeight * vertical +
+            shaped * ContinentAmplitude * vertical +
+            mountains * MountainAmplitude * vertical * mountainMask +
+            (detail - 0.5f) * 2f * DetailAmplitude * vertical;
 
         if (Variety > 0f)
         {
-            height = ApplyTerraces(height, region);
-            height -= CanyonDepth(sampleX, sampleZ, region);
+            height = ApplyTerraces(height, region, TerraceStep * vertical);
+            height -= CanyonDepth(sampleX, sampleZ, region) * vertical;
         }
 
         return (int)MathF.Floor(height);
@@ -161,7 +174,7 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
     /// In a narrow band of region values the height snaps to steps, which turns rolling hills into
     /// layered mesas. Blended in and out so the terraces do not start at a visible seam.
     /// </summary>
-    private static float ApplyTerraces(float height, float region)
+    private static float ApplyTerraces(float height, float region, float step)
     {
         float mesa =
             Noise.SmoothStep(0.30f, 0.42f, region) *
@@ -169,7 +182,7 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
 
         if (mesa <= 0.01f) return height;
 
-        float terraced = MathF.Round(height / TerraceStep) * TerraceStep;
+        float terraced = MathF.Round(height / step) * step;
         return height + (terraced - height) * mesa;
     }
 
@@ -180,7 +193,7 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
     private bool IsCave(int x, int y, int z, int surface)
     {
         if (Caves <= 0f) return false;
-        if (y < 2 || y > surface - RoofAt(x, z)) return false; // keep bedrock and a roof of rock
+        if (y < 2 || y < surface - CaveDepth || y > surface - RoofAt(x, z)) return false; // bedrock, the deep rock and a roof stay solid
 
         float width = 0.075f * Caves;
 
@@ -204,9 +217,9 @@ public sealed class DefaultTerrainGenerator : ITerrainGenerator
     }
 
     /// <summary>Rock standing above the surface; the threshold rises with height so towers taper</summary>
-    private bool IsSpire(int x, int y, int z, int surface)
+    private bool IsSpire(int x, int y, int z, int surface, int spireHeight)
     {
-        float above = (y - surface) / (float)SpireHeight;
+        float above = (y - surface) / (float)Math.Max(1, spireHeight);
         float threshold = 0.56f + above * 0.34f;
 
         return Noise.Value3D(x * SpireScale, y * SpireScale * 1.5f, z * SpireScale, Seed + 6100)

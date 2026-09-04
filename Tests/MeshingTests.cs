@@ -533,3 +533,79 @@ public class GameRegistryTests
         Assert.Throws<ArgumentException>(() => registry.Add<TestGame>());
     }
 }
+
+public class ChunkSlabTests
+{
+    private const int WorldHeight = 128;
+
+    private sealed class FlatGenerator : ITerrainGenerator
+    {
+        public void Generate(ChunkCoord coord, byte[] blocks, int worldHeight)
+        {
+            for (int y = 0; y < 40; y++)
+            for (int z = 0; z < Chunk.Size; z++)
+            for (int x = 0; x < Chunk.Size; x++)
+                blocks[Chunk.Index(x, y, z)] = BlockRegistry.Terrain;
+        }
+    }
+
+    [Fact]
+    public void SlabsOfOneBlockTakeNoMemory()
+    {
+        var chunk = new Chunk(new ChunkCoord(0, 0), WorldHeight, new FlatGenerator());
+
+        // Rows 0..31 are all rock, 32..63 mixed, 64..127 all air: one slab out of four holds an array
+        Assert.Equal(1, chunk.AllocatedSlabs);
+        Assert.Equal(BlockRegistry.Terrain, chunk.GetLocal(5, 10, 5, WorldHeight));
+        Assert.Equal(BlockRegistry.Terrain, chunk.GetLocal(5, 39, 5, WorldHeight));
+        Assert.Equal(BlockRegistry.Air, chunk.GetLocal(5, 40, 5, WorldHeight));
+        Assert.Equal(BlockRegistry.Air, chunk.GetLocal(5, 100, 5, WorldHeight));
+    }
+
+    [Fact]
+    public void WritingIntoAnElidedSlabAllocatesItAndKeepsTheRest()
+    {
+        var chunk = new Chunk(new ChunkCoord(0, 0), WorldHeight, new FlatGenerator());
+
+        chunk.SetLocal(3, 100, 3, BlockRegistry.Stone, WorldHeight);
+
+        Assert.Equal(2, chunk.AllocatedSlabs);
+        Assert.Equal(BlockRegistry.Stone, chunk.GetLocal(3, 100, 3, WorldHeight));
+        Assert.Equal(BlockRegistry.Air, chunk.GetLocal(4, 100, 3, WorldHeight));
+        Assert.True(chunk.Modified);
+    }
+
+    [Fact]
+    public void RowsAndColumnsCopyOutOfElidedAndRealSlabsAlike()
+    {
+        var chunk = new Chunk(new ChunkCoord(0, 0), WorldHeight, new FlatGenerator());
+        chunk.SetLocal(7, 20, 9, BlockRegistry.Stone, WorldHeight); // materialises slab 0
+
+        var row = new byte[Chunk.Size];
+        chunk.CopyRow(20, 9, row, 0);
+        Assert.Equal(BlockRegistry.Stone, row[7]);
+        Assert.Equal(BlockRegistry.Terrain, row[8]);
+
+        chunk.CopyRow(90, 9, row, 0);
+        Assert.All(row, block => Assert.Equal(BlockRegistry.Air, block));
+
+        var column = new byte[Chunk.Size * 3];
+        chunk.CopyColumn(20, 7, column, 0, 3);
+        Assert.Equal(BlockRegistry.Stone, column[9 * 3]);
+        Assert.Equal(BlockRegistry.Terrain, column[10 * 3]);
+    }
+
+    [Fact]
+    public void TheFlatArrayRoundTrips()
+    {
+        var chunk = new Chunk(new ChunkCoord(0, 0), WorldHeight, new FlatGenerator());
+        chunk.SetLocal(1, 70, 1, BlockRegistry.Stone, WorldHeight);
+
+        var reloaded = new Chunk(new ChunkCoord(0, 0), chunk.ToFlatArray(), new Dictionary<int, byte[]>());
+
+        Assert.Equal(WorldHeight, reloaded.Height);
+        Assert.Equal(BlockRegistry.Stone, reloaded.GetLocal(1, 70, 1, WorldHeight));
+        Assert.Equal(BlockRegistry.Terrain, reloaded.GetLocal(1, 5, 1, WorldHeight));
+        Assert.Equal(2, reloaded.AllocatedSlabs);
+    }
+}

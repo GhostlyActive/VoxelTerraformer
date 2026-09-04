@@ -11,11 +11,12 @@ namespace VoxelEngine.World;
 /// </summary>
 public sealed class WorldStorage
 {
-    private const byte FormatVersion = 4; // v4: blocks plus sub-voxel density field (512 bytes per edited block)
+    private const byte FormatVersion = 5; // v5: the world height travels with the save; v4 had blocks plus density fields at 64 high
 
     private sealed class WorldMeta
     {
         public int Version { get; set; } // missing in old saves, so 0, so incompatible
+        public int WorldHeight { get; set; }
         public float PlayerX { get; set; }
         public float PlayerY { get; set; }
         public float PlayerZ { get; set; }
@@ -25,9 +26,10 @@ public sealed class WorldStorage
     private readonly string _directory;
 
     /// <param name="directory">Absolute path of the slot, normally from <see cref="Config.UserDataPaths.SaveDirectory"/></param>
-    public WorldStorage(string directory)
+    public WorldStorage(string directory, int worldHeight = VoxelWorld.DefaultHeight)
     {
         _directory = directory;
+        WorldHeight = worldHeight;
     }
 
     private string PathFor(ChunkCoord coord) => Path.Combine(_directory, $"chunk_{coord.X}_{coord.Z}.bin");
@@ -40,8 +42,11 @@ public sealed class WorldStorage
     /// <summary>Is there a saved file for this chunk? Chunks without one regenerate identically and need no reload.</summary>
     public bool HasChunkFile(ChunkCoord coord) => File.Exists(PathFor(coord));
 
-    /// <summary>Is there a save AND is it in the current format? Otherwise "Load" would quietly hand back a fresh world.</summary>
-    public bool HasCompatibleSave => ReadMeta() is { } meta && meta.Version == FormatVersion;
+    /// <summary>The height this storage saves and loads; a save of another height is not compatible</summary>
+    public int WorldHeight { get; }
+
+    /// <summary>Is there a save AND is it in the current format and height? Otherwise "Load" would quietly hand back a fresh world.</summary>
+    public bool HasCompatibleSave => ReadMeta() is { } meta && meta.Version == FormatVersion && meta.WorldHeight == WorldHeight;
 
     private WorldMeta? ReadMeta()
     {
@@ -79,6 +84,7 @@ public sealed class WorldStorage
             var meta = new WorldMeta
             {
                 Version = FormatVersion,
+                WorldHeight = WorldHeight,
                 PlayerX = playerPosition.X,
                 PlayerY = playerPosition.Y,
                 PlayerZ = playerPosition.Z,

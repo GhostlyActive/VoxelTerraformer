@@ -112,6 +112,19 @@ public sealed class VoxelBody
     public Vector3 ToWorld(Vector3 localPoint)
         => Position + RotateY((localPoint - _gridCenter) * VoxelScale, Spin);
 
+    /// <summary>A direction from the body's frame into the world; only the spin applies</summary>
+    public Vector3 DirectionToWorld(Vector3 localDirection) => RotateY(localDirection, Spin);
+
+    /// <summary>A world direction into the body's frame, so it turns with the body</summary>
+    public Vector3 DirectionToLocal(Vector3 worldDirection) => RotateY(worldDirection, -Spin);
+
+    /// <summary>Straight up from the body's centre through a world point</summary>
+    public Vector3 UpAt(Vector3 worldPoint)
+    {
+        Vector3 up = worldPoint - Position;
+        return up.LengthSquared() < 1e-6f ? Vector3.UnitY : Vector3.Normalize(up);
+    }
+
     public bool IsSolidAt(Vector3 worldPoint)
     {
         Vector3 local = ToLocal(worldPoint);

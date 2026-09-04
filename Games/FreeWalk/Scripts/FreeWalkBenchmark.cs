@@ -56,10 +56,16 @@ internal sealed class FreeWalkBenchmark
         _scene.Player.PointAt(position + new Vector3(400f, -40f, 0f));
     }
 
+    private bool _skipSample;
+
     public void Update()
     {
         float frame = Raylib.GetFrameTime();
-        _samples.Add(frame * 1000f);
+
+        // The frame that wrote a screenshot is not the engine's to answer for
+        if (_skipSample) _skipSample = false;
+        else _samples.Add(frame * 1000f);
+
         _frames++;
         _phaseTime += frame;
 
@@ -152,6 +158,14 @@ internal sealed class FreeWalkBenchmark
     {
         Report();
 
+        // The still view is the overview picture of the world; taken after the measurement so the
+        // read-back does not land in it
+        if (_phase == Phase.Still)
+        {
+            Raylib.TakeScreenshot("bench-view.png");
+            _skipSample = true;
+        }
+
         if (_edits > 0)
         {
             Console.WriteLine($"[bench] {_phase,-11} edits {_edits}: mesh visible after avg {_editFramesTotal / (float)_edits:F1} frames, max {_editFramesMax} frames");
@@ -191,6 +205,7 @@ internal sealed class FreeWalkBenchmark
             $"[bench] {_phase,-11} {_phaseTime,6:F2}s {sorted.Length,5} frames | avg {sum / sorted.Length:F2} ms | p99 {p99:F2} ms | " +
             $"max {sorted[^1]:F2} ms | over 16.7 ms: {over} | sections {_scene.Meshes.VisibleSections} | draws {_scene.Meshes.DrawCalls} | " +
             $"tris {_scene.Meshes.TotalTriangles / 1000}k | gpu {_scene.Meshes.GpuBytes / (1024 * 1024)} MB | " +
-            $"loaded {_scene.World.LoadedChunkCount} | meshed {_scene.Meshes.MeshedChunks} | unconverted {_scene.Meshes.UnconvertedChunks} | dirty {_scene.Meshes.PendingChunks} | wave {(_scene.Transition == null ? "done" : _scene.Transition.DisplayRadius.ToString("0") + " m")}");
+            $"loaded {_scene.World.LoadedChunkCount} | meshed {_scene.Meshes.MeshedChunks} | unconverted {_scene.Meshes.UnconvertedChunks} | dirty {_scene.Meshes.PendingChunks} | " +
+            $"wave {(_scene.Transition == null ? "done" : _scene.Transition.DisplayRadius.ToString("0") + " m")} | rss {Environment.WorkingSet / (1024 * 1024)} MB");
     }
 }

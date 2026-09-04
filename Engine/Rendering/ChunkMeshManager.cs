@@ -24,12 +24,14 @@ namespace VoxelEngine.Rendering;
 /// </summary>
 public sealed class ChunkMeshManager : IDisposable
 {
-    /// <summary>Blocks per meshing section at full detail; <see cref="VoxelWorld.WorldHeight"/> must divide by it</summary>
+    /// <summary>Blocks per meshing section at full detail; the world height must divide by it</summary>
     public const int SectionHeight = 16;
 
-    public const int SectionCount = VoxelWorld.WorldHeight / SectionHeight;
+    /// <summary>Sections per column; at most 32, which is what the section masks hold</summary>
+    public int SectionCount { get; }
 
-    private const int AllSections = (1 << SectionCount) - 1;
+    private readonly int _height;
+    private readonly int _allSections;
 
     /// <summary>Main-thread time per frame for taking snapshots and for uploading meshes</summary>
     private const double SnapshotBudgetMs = 2.5;
@@ -37,14 +39,20 @@ public sealed class ChunkMeshManager : IDisposable
 
     private sealed class Entry
     {
+        public Entry(int sectionCount)
+        {
+            Sections = new GpuMesh[]?[sectionCount];
+            AppliedSequence = new int[sectionCount];
+        }
+
         /// <summary>Level of detail of the meshes on the GPU; -1 before the first upload</summary>
         public int Lod = -1;
 
         /// <summary>Mesh parts per section at level 0; at coarser levels only slot 0 is used</summary>
-        public readonly GpuMesh[]?[] Sections = new GpuMesh[]?[SectionCount];
+        public readonly GpuMesh[]?[] Sections;
 
         /// <summary>Sequence of the job whose result each section shows; a lower one arriving later is dropped</summary>
-        public readonly int[] AppliedSequence = new int[SectionCount];
+        public readonly int[] AppliedSequence;
 
         /// <summary>Sections that received an upload since the last level change</summary>
         public int MeshedMask;
@@ -104,12 +112,17 @@ public sealed class ChunkMeshManager : IDisposable
     public ChunkMeshManager(VoxelWorld world)
     {
         _world = world;
+        _height = world.Height;
+        SectionCount = _height / SectionHeight;
+        if (SectionCount > 32) throw new ArgumentException("A world may have at most 32 mesh sections per column", nameof(world));
+        _allSections = SectionCount == 32 ? -1 : (1 << SectionCount) - 1;
+
         _world.ChunkDirty += MarkDirty;
         _world.ChunkUnloaded += OnChunkUnloaded;
 
         // Chunks loaded before this manager existed announced themselves to nobody
         foreach (Chunk chunk in _world.Chunks)
-            if (chunk.Surrounded) _scheduler.Mark(chunk.Coord, AllSections, MeshReason.Stream);
+            if (chunk.Surrounded) _scheduler.Mark(chunk.Coord, _allSections, MeshReason.Stream);
 
         // The main thread and the driver keep two cores; the rest mesh. They run below normal
         // priority so a burst of work never steals a frame from the game.
@@ -152,7 +165,7 @@ public sealed class ChunkMeshManager : IDisposable
         // Jobs in flight for the old look are skipped by the workers; marking every chunk brings
         // their sections back into the queue
         foreach (Chunk chunk in _world.Chunks)
-            _scheduler.Mark(chunk.Coord, AllSections, MeshReason.Mode);
+            _scheduler.Mark(chunk.Coord, _allSections, MeshReason.Mode);
     }
 
     private void OnChunkUnloaded(ChunkCoord coord)
@@ -167,7 +180,7 @@ public sealed class ChunkMeshManager : IDisposable
 
     private static void FreeAll(Entry entry)
     {
-        for (int section = 0; section < SectionCount; section++)
+        for (int section = 0; section < entry.Sections.Length; section++)
             FreeSection(entry, section);
 
         entry.MeshedMask = 0;
@@ -269,7 +282,7 @@ public sealed class ChunkMeshManager : IDisposable
         // column that was never uploaded would stay a hole
         if (result.Lod != LodPolicy.Choose(entry.Lod, DistanceInChunks(result.Coord), DetailRadius))
         {
-            _scheduler.Mark(result.Coord, AllSections, MeshReason.Lod);
+            _scheduler.Mark(result.Coord, _allSections, MeshReason.Lod);
             return;
         }
 
@@ -277,10 +290,10 @@ public sealed class ChunkMeshManager : IDisposable
         {
             // A level change replaces the whole column at once, or the two levels would show
             // side by side inside one chunk
-            bool wholeColumn = result.Lod > 0 || result.Sections == AllSections;
+            bool wholeColumn = result.Lod > 0 || result.Sections == _allSections;
             if (!wholeColumn)
             {
-                _scheduler.Mark(result.Coord, AllSections, MeshReason.Lod);
+                _scheduler.Mark(result.Coord, _allSections, MeshReason.Lod);
                 return;
             }
 
@@ -327,7 +340,7 @@ public sealed class ChunkMeshManager : IDisposable
     {
         if (_entries.TryGetValue(coord, out Entry? entry)) return entry;
 
-        entry = new Entry();
+        entry = new Entry(SectionCount);
         _entries[coord] = entry;
 
         return entry;
@@ -341,7 +354,7 @@ public sealed class ChunkMeshManager : IDisposable
             if (entry.Lod < 0) continue;
 
             int wanted = LodPolicy.Choose(entry.Lod, DistanceInChunks(coord), DetailRadius);
-            if (wanted != entry.Lod) _scheduler.Mark(coord, AllSections, MeshReason.Lod);
+            if (wanted != entry.Lod) _scheduler.Mark(coord, _allSections, MeshReason.Lod);
         }
     }
 
@@ -405,14 +418,14 @@ public sealed class ChunkMeshManager : IDisposable
         if (lod > 0)
         {
             int scale = LodPolicy.ScaleOf(lod);
-            byte[] coarse = ArrayPool<byte>.Shared.Rent(MeshGrid.LengthFor(Chunk.Size / scale, VoxelWorld.WorldHeight / scale));
-            LodSampler.Sample(_neighbourhood, VoxelWorld.WorldHeight, scale, coarse);
+            byte[] coarse = ArrayPool<byte>.Shared.Rent(MeshGrid.LengthFor(Chunk.Size / scale, _height / scale));
+            LodSampler.Sample(_neighbourhood, _height, scale, coarse);
 
             return new MeshJob(coord, chunk, lod, 1, coarse, NoRefinements, worldX, worldZ, sequence, _smooth);
         }
 
         (int yStart, int yEnd) = RowsOf(sections);
-        byte[] padded = ArrayPool<byte>.Shared.Rent(ChunkMesher.PaddedLength(VoxelWorld.WorldHeight));
+        byte[] padded = ArrayPool<byte>.Shared.Rent(ChunkMesher.PaddedLength(_height));
 
         CopyBand(padded, yStart - 1, yEnd + 1);
         Dictionary<int, byte[]> refinements = SnapshotRefinements(yStart - 1, yEnd + 1);
@@ -421,7 +434,7 @@ public sealed class ChunkMeshManager : IDisposable
     }
 
     /// <summary>The block rows [start, end) spanned by a section mask</summary>
-    private static (int Start, int End) RowsOf(int sections)
+    private (int Start, int End) RowsOf(int sections)
     {
         int first = SectionCount, last = -1;
         for (int section = 0; section < SectionCount; section++)
@@ -441,7 +454,7 @@ public sealed class ChunkMeshManager : IDisposable
     /// </summary>
     private void CopyBand(byte[] padded, int minY, int maxY)
     {
-        const int worldHeight = VoxelWorld.WorldHeight;
+        int worldHeight = _height;
         const int stride = ChunkMesher.PaddedSize;
 
         Chunk chunk = _neighbourhood[4]!;
@@ -497,8 +510,8 @@ public sealed class ChunkMeshManager : IDisposable
             padded[destination + z * stride] = BlockRegistry.Air;
     }
 
-    private static byte Corner(Chunk? neighbour, int x, int y, int z)
-        => neighbour == null ? BlockRegistry.Air : (byte)neighbour.GetLocal(x, y, z, VoxelWorld.WorldHeight);
+    private byte Corner(Chunk? neighbour, int x, int y, int z)
+        => neighbour == null ? BlockRegistry.Air : (byte)neighbour.GetLocal(x, y, z, _height);
 
     /// <summary>
     /// The chunk's sub-voxel density fields within the rows, rekeyed to padded indices, plus the
@@ -563,7 +576,7 @@ public sealed class ChunkMeshManager : IDisposable
         {
             if (job.Lod == 0)
             {
-                var grid = MeshGrid.FullDetail(job.Grid, VoxelWorld.WorldHeight);
+                var grid = MeshGrid.FullDetail(job.Grid, _height);
 
                 for (int section = 0; section < SectionCount; section++)
                 {
@@ -577,7 +590,7 @@ public sealed class ChunkMeshManager : IDisposable
             }
             else
             {
-                var grid = MeshGrid.Coarse(job.Grid, VoxelWorld.WorldHeight, LodPolicy.ScaleOf(job.Lod));
+                var grid = MeshGrid.Coarse(job.Grid, _height, LodPolicy.ScaleOf(job.Lod));
 
                 data[0] = job.Smooth
                     ? SmoothChunkMesher.Build(builder, in grid, NoRefinements, job.WorldX, job.WorldZ, 0, grid.Height)
@@ -639,7 +652,7 @@ public sealed class ChunkMeshManager : IDisposable
             else if (entry.Sections[0] is { } parts)
             {
                 var min = new Vector3(originX, 0, originZ);
-                var max = min + new Vector3(Chunk.Size, VoxelWorld.WorldHeight, Chunk.Size);
+                var max = min + new Vector3(Chunk.Size, _height, Chunk.Size);
                 if (!frustum.Intersects(min, max)) continue;
 
                 DrawParts(parts, transform);
@@ -725,11 +738,11 @@ public sealed class ChunkMeshManager : IDisposable
         {
             var center = new Vector3(
                 coord.X * Chunk.Size + Chunk.Size / 2f,
-                VoxelWorld.WorldHeight / 2f,
+                _height / 2f,
                 coord.Z * Chunk.Size + Chunk.Size / 2f);
 
             Color color = entry.Lod switch { 0 => Color.Magenta, 1 => Color.Orange, _ => Color.SkyBlue };
-            Raylib.DrawCubeWires(center, Chunk.Size, VoxelWorld.WorldHeight, Chunk.Size, color);
+            Raylib.DrawCubeWires(center, Chunk.Size, _height, Chunk.Size, color);
         }
     }
 

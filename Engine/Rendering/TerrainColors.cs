@@ -22,8 +22,15 @@ public static class TerrainColors
         return Scale(baseColor, variation);
     }
 
-    // Height anchors for the terrain gradient, from the bottom of a basin to a snow cap. Colours
-    // in between are interpolated, so retuning the landscape is a matter of moving these numbers.
+    /// <summary>
+    /// The height the gradient below is laid out for; a taller world stretches the bands with
+    /// it. Set by the terrain scene, read by the mesh workers, so change it before meshing starts.
+    /// </summary>
+    public static int WorldHeight { get; set; } = 64;
+
+    // Height anchors for the terrain gradient, from the bottom of a basin to a snow cap, for a
+    // world 64 blocks high. Colours in between are interpolated, so retuning the landscape is a
+    // matter of moving these numbers.
     private static readonly (int Y, Vector3 Color)[] _bands =
     {
         (0,  new Vector3(10, 26, 78)),    // deep basin
@@ -38,13 +45,15 @@ public static class TerrainColors
 
     private static Color HeightColor(int y)
     {
-        if (y <= _bands[0].Y) return ToColor(_bands[0].Color);
+        float scale = WorldHeight / 64f;
+        if (y <= _bands[0].Y * scale) return ToColor(_bands[0].Color);
 
         for (int i = 1; i < _bands.Length; i++)
         {
-            if (y > _bands[i].Y) continue;
+            float top = _bands[i].Y * scale;
+            if (y > top) continue;
 
-            float t = InverseLerp(_bands[i - 1].Y, _bands[i].Y, y);
+            float t = InverseLerp(_bands[i - 1].Y * scale, top, y);
             return ToColor(Vector3.Lerp(_bands[i - 1].Color, _bands[i].Color, t));
         }
 

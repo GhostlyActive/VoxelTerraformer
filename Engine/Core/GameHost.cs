@@ -13,9 +13,6 @@ public sealed record HostOptions
     public string ProductName { get; init; } = "VoxelEngine";
 
     public string WindowTitle { get; init; } = "VoxelEngine";
-    public int Width { get; init; } = 1280;
-    public int Height { get; init; } = 720;
-    public int TargetFps { get; init; } = 60;
 
     /// <summary>&gt; 0: drop a screenshot after that many frames and quit (smoke test)</summary>
     public int SmokeFrames { get; init; }
@@ -36,6 +33,7 @@ public sealed class GameHost : IDisposable
 
     private EngineSettings _settings = new();
     private UserDataPaths _paths = null!;
+    private SettingsStore _store = null!;
     private PauseMenu _pauseMenu = null!;
     private TuningMenu _tuningMenu = null!;
 
@@ -74,26 +72,58 @@ public sealed class GameHost : IDisposable
         _statusTimer = 2.5f;
     }
 
+    /// <summary>Window sizes offered in the menu; the first is the default</summary>
+    private static readonly (int Width, int Height)[] Resolutions =
+    {
+        (1280, 720), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160),
+    };
+
+    private static readonly string[] ResolutionLabels = Resolutions.Select(r => $"{r.Width} x {r.Height}").ToArray();
+
     public void Run(string startGameId)
     {
         bool smokeTest = _options.SmokeFrames > 0;
 
-        // Multisampling before the window exists. At this view distance a distant block is a pixel
-        // or two wide, and without it those edges crawl as soon as the player moves.
-        Raylib.SetConfigFlags(ConfigFlags.Msaa4xHint);
+        _paths = new UserDataPaths(_options.ProductName);
+        _store = new SettingsStore(_paths.SettingsFile);
+        _settings = _store.Load<EngineSettings>("Engine");
 
-        Raylib.InitWindow(_options.Width, _options.Height, _options.WindowTitle);
-        Raylib.SetTargetFPS(_options.TargetFps);
+        // Multisampling and vsync are decided before the window exists. At this view distance a
+        // distant block is a pixel or two wide, and without MSAA those edges crawl as soon as the
+        // player moves. A change in the menu therefore waits for the next start.
+        ConfigFlags flags = 0;
+        if (_settings.Msaa) flags |= ConfigFlags.Msaa4xHint;
+        if (_settings.VSync) flags |= ConfigFlags.VSyncHint;
+        if (flags != 0) Raylib.SetConfigFlags(flags);
+
+        Raylib.InitWindow(_settings.WindowWidth, _settings.WindowHeight, _options.WindowTitle);
+        if (_settings.Fullscreen && !smokeTest) Raylib.ToggleBorderlessWindowed();
+        Raylib.SetTargetFPS(_settings.TargetFps);
         Raylib.SetExitKey(KeyboardKey.Null); // ESC belongs to the pause menu, not to the window
         Raylib.InitAudioDevice();
 
-        if (smokeTest) Raylib.SetMousePosition(_options.Width / 2, _options.Height / 2); // or the first mouse delta twists the camera
+        if (smokeTest) Raylib.SetMousePosition(_settings.WindowWidth / 2, _settings.WindowHeight / 2); // or the first mouse delta twists the camera
         else Raylib.DisableCursor();
 
-        _paths = new UserDataPaths(_options.ProductName);
-        _settings = EngineSettings.Load(_paths.SettingsFile);
         _pauseMenu = new PauseMenu(_registry);
-        _tuningMenu = new TuningMenu(_settings);
+
+        // What applies to every game sits in the pause menu, under Settings; the tuning menu on
+        // M is left to the dials of the running scene and game
+        var defaults = new EngineSettings();
+        _pauseMenu.Settings.AddSection("DISPLAY", () => _store.Save("Engine", _settings))
+            .Choice("Resolution", ResolutionLabels, ResolutionIndex, SetResolution, 0)
+            .Toggle("Fullscreen", () => _settings.Fullscreen, v => _settings.Fullscreen = v, defaults.Fullscreen)
+            .Toggle("VSync", () => _settings.VSync, v => _settings.VSync = v, defaults.VSync)
+            .Value("Target FPS", () => _settings.TargetFps, v => _settings.TargetFps = (int)v, defaults.TargetFps, 10f, 30f, 240f, "0")
+            .Toggle("MSAA 4x (restart)", () => _settings.Msaa, v => _settings.Msaa = v, defaults.Msaa);
+
+        _pauseMenu.Settings.AddSection("VIEW AND CONTROLS", () => _store.Save("Engine", _settings))
+            .Value("Mouse sensitivity", () => _settings.MouseSensitivity, v => _settings.MouseSensitivity = v, defaults.MouseSensitivity, 0.01f, 0.02f, 0.50f, "0.00")
+            .Value("Field of view", () => _settings.FieldOfView, v => _settings.FieldOfView = v, defaults.FieldOfView, 2f, 50f, 110f, "0")
+            .Value("View distance chunks", () => _settings.ViewDistanceChunks, v => _settings.ViewDistanceChunks = (int)v, defaults.ViewDistanceChunks, 2f, 6f, World.VoxelWorld.MaxViewDistance, "0")
+            .Value("Detail radius chunks", () => _settings.DetailRadiusChunks, v => _settings.DetailRadiusChunks = (int)v, defaults.DetailRadiusChunks, 1f, 2f, World.VoxelWorld.MaxViewDistance, "0");
+
+        _tuningMenu = new TuningMenu();
         _cursorFree = smokeTest;
         SetDebugOverlay(smokeTest); // on right away in the smoke test, so the stats end up on the screenshot
 
@@ -124,6 +154,7 @@ public sealed class GameHost : IDisposable
 
             bool paused = _pauseMenu.IsOpen || menuWasOpen;
             UpdateCursor(paused, smokeTest);
+            if (!smokeTest) ApplyDisplaySettings();
 
             if (!paused)
             {
@@ -176,7 +207,7 @@ public sealed class GameHost : IDisposable
 
         // The smoke test must not touch the tuning values: the window grabs focus on startup, so
         // stray key presses would otherwise end up in the config for good
-        if (!smokeTest) _settings.Save();
+        if (!smokeTest) _store.Save("Engine", _settings);
     }
 
     /// <summary>
@@ -186,7 +217,45 @@ public sealed class GameHost : IDisposable
     private void SetDebugOverlay(bool on)
     {
         DebugOverlay = on;
-        Raylib.SetTargetFPS(on ? 0 : _options.TargetFps);
+        Raylib.SetTargetFPS(on ? 0 : _settings.TargetFps);
+    }
+
+    private int _appliedTargetFps = -1;
+
+    /// <summary>Window size, fullscreen, vsync and the frame cap follow the settings as they change</summary>
+    private void ApplyDisplaySettings()
+    {
+        bool fullscreen = Raylib.IsWindowState(ConfigFlags.BorderlessWindowMode);
+        if (_settings.Fullscreen != fullscreen) Raylib.ToggleBorderlessWindowed();
+
+        if (!_settings.Fullscreen &&
+            (Raylib.GetScreenWidth() != _settings.WindowWidth || Raylib.GetScreenHeight() != _settings.WindowHeight))
+            Raylib.SetWindowSize(_settings.WindowWidth, _settings.WindowHeight);
+
+        bool vsync = Raylib.IsWindowState(ConfigFlags.VSyncHint);
+        if (_settings.VSync && !vsync) Raylib.SetWindowState(ConfigFlags.VSyncHint);
+        else if (!_settings.VSync && vsync) Raylib.ClearWindowState(ConfigFlags.VSyncHint);
+
+        if (_settings.TargetFps != _appliedTargetFps)
+        {
+            _appliedTargetFps = _settings.TargetFps;
+            if (!DebugOverlay) Raylib.SetTargetFPS(_settings.TargetFps);
+        }
+    }
+
+    private int ResolutionIndex()
+    {
+        for (int i = 0; i < Resolutions.Length; i++)
+            if (Resolutions[i].Width == _settings.WindowWidth && Resolutions[i].Height == _settings.WindowHeight) return i;
+
+        return 0;
+    }
+
+    private void SetResolution(int index)
+    {
+        (int width, int height) = Resolutions[Math.Clamp(index, 0, Resolutions.Length - 1)];
+        _settings.WindowWidth = width;
+        _settings.WindowHeight = height;
     }
 
     private void HandleMenu()
@@ -232,7 +301,7 @@ public sealed class GameHost : IDisposable
 
         _audio = new AudioBank(Path.Combine(GameContext.AssetRoot(entry.Id), "Sounds"));
         _game = entry.Create();
-        _game.Attach(new GameContext(this, entry, _settings, _audio, _paths, _profiler, _options.Benchmark));
+        _game.Attach(new GameContext(this, entry, _settings, _audio, _paths, _store, _tuningMenu, _profiler, _options.Benchmark));
         _game.Load();
 
         // Raylib's defaults waste the depth buffer on the first centimetres, which flickers on

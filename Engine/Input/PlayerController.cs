@@ -5,6 +5,37 @@ using VoxelEngine.World;
 
 namespace VoxelEngine.Input;
 
+/// <summary>
+/// One frame of walking input, so the player can be stepped without a window. <see cref="Move"/>
+/// is X right and Y forward, in the player's own heading.
+/// </summary>
+public readonly record struct PlayerInput(Vector2 Look, Vector2 Move, bool Sprint, bool JumpPressed, bool JumpHeld)
+{
+    public static PlayerInput None => new(Vector2.Zero, Vector2.Zero, false, false, false);
+
+    /// <summary>Mouse and keyboard: WASD walks, Shift sprints, Space jumps and, held in the air, fires the jetpack</summary>
+    public static PlayerInput Read()
+    {
+        Vector2 move = Vector2.Zero;
+        if (Raylib.IsKeyDown(KeyboardKey.W)) move.Y += 1f;
+        if (Raylib.IsKeyDown(KeyboardKey.S)) move.Y -= 1f;
+        if (Raylib.IsKeyDown(KeyboardKey.D)) move.X += 1f;
+        if (Raylib.IsKeyDown(KeyboardKey.A)) move.X -= 1f;
+
+        return new PlayerInput(
+            Raylib.GetMouseDelta(),
+            move,
+            Raylib.IsKeyDown(KeyboardKey.LeftShift),
+            Raylib.IsKeyPressed(KeyboardKey.Space),
+            Raylib.IsKeyDown(KeyboardKey.Space));
+    }
+}
+
+/// <summary>
+/// The walking player: mouse look, WASD, sprint, a jump with coyote time and a jump buffer, and
+/// sub-voxel collision against the world. With <see cref="JetpackEnabled"/>, holding the jump
+/// key in the air burns fuel for lift; the tank refills on the ground.
+/// </summary>
 public class PlayerController
 {
     public Vector3 Position;
@@ -19,8 +50,9 @@ public class PlayerController
     private const float Height = 1.80f;
     private const float EyeHeight = 1.62f;
 
-    // Movement tuning comes from EngineSettings (menu on M) and can be changed live
-    private readonly EngineSettings _settings;
+    // Movement tuning comes from the scene's TerrainSettings, mouse and view from the engine's; both change live
+    private readonly EngineSettings _engine;
+    private readonly TerrainSettings _settings;
 
     // The field of view widens a little while sprinting, which sells the pace
     private const float SprintFovBoost = 6f;
@@ -35,7 +67,22 @@ public class PlayerController
     private float _timeSinceGrounded = 999f;
     private float _timeSinceJumpPressed = 999f;
 
+    // The jetpack must not turn a jump into a rocket start: it only fires once the coyote time
+    // is over, so a tap of Space is still just a jump
+    private const float JetpackRefillSeconds = 4f;
+    private const float JetpackMaxRise = 32f;
+    private float _fuel = 1f;
+
     public bool IsGrounded => _grounded;
+
+    /// <summary>Lets the jump key, held in the air, fire the jetpack; off, the player only jumps</summary>
+    public bool JetpackEnabled { get; set; }
+
+    /// <summary>Fuel left in the tank, 0..1</summary>
+    public float Fuel01 => _fuel;
+
+    /// <summary>True in the frames the jetpack is firing, for exhaust and sound</summary>
+    public bool JetpackBurning { get; private set; }
 
     public BoundingBox Bounds => new(
         new Vector3(Position.X - HalfWidth, Position.Y, Position.Z - HalfWidth),
@@ -48,35 +95,33 @@ public class PlayerController
         _velocity = Vector3.Zero;
     }
 
-    public PlayerController(Vector3 startPos, EngineSettings settings)
+    public PlayerController(Vector3 startPos, EngineSettings engine, TerrainSettings settings)
     {
+        _engine = engine;
         _settings = settings;
         Position = startPos;
         _yaw = 135f;
         _pitch = -15f;
     }
 
-    public Camera3D Update(VoxelWorld world, float dt)
+    public Camera3D Update(VoxelWorld world, float dt) => Step(world, PlayerInput.Read(), dt);
+
+    /// <summary>One step of the walking model on explicit input</summary>
+    public Camera3D Step(VoxelWorld world, in PlayerInput input, float dt)
     {
-        UpdateLook(dt);
+        UpdateLook(input.Look);
 
-        // Input movement in local space
-        Vector3 wish = Vector3.Zero;
-        if (Raylib.IsKeyDown(KeyboardKey.W)) wish += Vector3.UnitZ;
-        if (Raylib.IsKeyDown(KeyboardKey.S)) wish -= Vector3.UnitZ;
-        if (Raylib.IsKeyDown(KeyboardKey.D)) wish += Vector3.UnitX;
-        if (Raylib.IsKeyDown(KeyboardKey.A)) wish -= Vector3.UnitX;
-
+        Vector2 wish = input.Move;
         if (wish.LengthSquared() > 0f)
-            wish = Vector3.Normalize(wish);
+            wish = Vector2.Normalize(wish);
 
         // Convert wish direction to world space based on yaw
         Vector3 forward = ForwardOnXZ();
         Vector3 right = Vector3.Normalize(Vector3.Cross(forward, Vector3.UnitY));
 
-        bool sprinting = Raylib.IsKeyDown(KeyboardKey.LeftShift) && wish.LengthSquared() > 0f;
+        bool sprinting = input.Sprint && wish.LengthSquared() > 0f;
         float speed = _settings.WalkSpeed * (sprinting ? _settings.SprintMultiplier : 1f);
-        Vector3 move = (right * wish.X + forward * wish.Z) * speed;
+        Vector3 move = (right * wish.X + forward * wish.Y) * speed;
 
         // Apply horizontal velocity (simple “arcade”)
         _velocity.X = move.X;
@@ -84,7 +129,7 @@ public class PlayerController
 
         // Jump (with coyote time and jump buffer)
         _timeSinceJumpPressed += dt;
-        if (Raylib.IsKeyPressed(KeyboardKey.Space)) _timeSinceJumpPressed = 0f;
+        if (input.JumpPressed) _timeSinceJumpPressed = 0f;
 
         if (_grounded) _timeSinceGrounded = 0f;
         else _timeSinceGrounded += dt;
@@ -98,6 +143,8 @@ public class PlayerController
             _timeSinceJumpPressed = JumpBufferTime; // buffer spent
         }
 
+        UpdateJetpack(input.JumpHeld, dt);
+
         // Gravity
         _velocity.Y -= _settings.Gravity * dt;
         if (_velocity.Y < -60f) _velocity.Y = -60f;
@@ -106,17 +153,36 @@ public class PlayerController
         MoveAndCollide(world, dt);
 
         // Build camera from player
-        float targetFov = _settings.FieldOfView + (sprinting ? SprintFovBoost : 0f);
+        float targetFov = _engine.FieldOfView + (sprinting ? SprintFovBoost : 0f);
         if (_fov <= 0f) _fov = targetFov; // first frame: do not ramp up from nothing
         _fov += (targetFov - _fov) * Math.Min(1f, 10f * dt);
 
         return BuildCamera();
     }
 
+    private void UpdateJetpack(bool jumpHeld, float dt)
+    {
+        JetpackBurning = false;
+        if (!JetpackEnabled) return;
+
+        if (_grounded)
+        {
+            _fuel = MathF.Min(1f, _fuel + dt / JetpackRefillSeconds);
+            return;
+        }
+
+        bool airborne = _timeSinceGrounded >= CoyoteTime;
+        if (!airborne || !jumpHeld || _fuel <= 0f) return;
+
+        _fuel = MathF.Max(0f, _fuel - dt / MathF.Max(0.1f, _settings.JetpackFuelSeconds));
+        _velocity.Y = MathF.Min(JetpackMaxRise, _velocity.Y + _settings.JetpackThrust * dt);
+        JetpackBurning = true;
+    }
+
     /// <summary>Camera at the current position and heading, without physics</summary>
     public Camera3D CameraOnly()
     {
-        if (_fov <= 0f) _fov = _settings.FieldOfView;
+        if (_fov <= 0f) _fov = _engine.FieldOfView;
         return BuildCamera();
     }
 
@@ -147,14 +213,12 @@ public class PlayerController
         };
     }
 
-    private void UpdateLook(float dt)
+    private void UpdateLook(Vector2 look)
     {
-        // Mouse delta
-        Vector2 md = Raylib.GetMouseDelta();
-        float sensitivity = _settings.MouseSensitivity;
+        float sensitivity = _engine.MouseSensitivity;
 
-        _yaw -= md.X * sensitivity;
-        _pitch -= md.Y * sensitivity;
+        _yaw -= look.X * sensitivity;
+        _pitch -= look.Y * sensitivity;
 
         _pitch = Math.Clamp(_pitch, -89f, 89f);
         if (_yaw > 360f) _yaw -= 360f;

@@ -18,8 +18,10 @@ public sealed class VoxelCannon
     /// <summary>Reports a hit at a point; returns true when the round should stop there</summary>
     public delegate bool ShotHitTest(Vector3 point, float blastRadius, float shotSize);
 
+    private readonly SolarSettings _settings;
+
     /// <summary>Hold time for a full charge, in seconds</summary>
-    public const float FullChargeSeconds = 1.6f;
+    public float FullChargeSeconds => _settings.FullChargeSeconds;
 
     private const float MinShotSize = 14f;
     private const float MaxShotSize = 60f;
@@ -73,10 +75,11 @@ public sealed class VoxelCannon
     /// <summary>Charge level 0..1, for the display</summary>
     public float Charge01 => Math.Clamp(_charge / FullChargeSeconds, 0f, 1f);
 
-    public VoxelCannon(ParticleSystem particles, AudioBank audio)
+    public VoxelCannon(ParticleSystem particles, AudioBank audio, SolarSettings settings)
     {
         _particles = particles;
         _audio = audio;
+        _settings = settings;
     }
 
     /// <summary>Call while the trigger is down</summary>

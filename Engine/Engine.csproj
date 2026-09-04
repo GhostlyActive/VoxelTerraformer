@@ -18,4 +18,8 @@
     <PackageReference Include="Raylib-cs" Version="7.0.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Tests" />
+  </ItemGroup>
+
 </Project>

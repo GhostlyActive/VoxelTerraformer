@@ -8,10 +8,14 @@ namespace VoxelEngine.World;
 
 public class VoxelWorld : IDisposable
 {
-    public const int WorldHeight = 64;
+    /// <summary>Height a world gets when none is asked for</summary>
+    public const int DefaultHeight = 256;
 
     /// <summary>Chunks the streaming can be asked to keep loaded around the player, at most</summary>
     public const int MaxViewDistance = 48;
+
+    /// <summary>Blocks from bedrock to the sky; a multiple of <see cref="Chunk.SlabHeight"/></summary>
+    public int Height { get; }
 
     // Streaming: chunks are requested in a circle around the player, built on worker threads
     // and adopted a few per frame; they are dropped with hysteresis two chunks further out
@@ -50,7 +54,7 @@ public class VoxelWorld : IDisposable
     // Sculpt mode: a sphere brush on the sub-voxel density field; holding it draws a continuous stroke
     private bool _hasSculptTarget;
     private float _sculptRadiusForDraw;
-    private EngineSettings _settings = new();
+    private TerrainSettings _settings = new();
 
     // A stroke is anchored to the surface it started on: while the button is held the brush
     // follows the crosshair across the plane through that point, not across whatever the ray hits
@@ -116,13 +120,18 @@ public class VoxelWorld : IDisposable
     public int UnloadRadius => _loadRadius + 2;
 
     /// <param name="storage">Where saves go; null for a world that cannot be saved or loaded</param>
-    public VoxelWorld(WorldStorage? storage, ITerrainGenerator? generator = null, int viewDistanceChunks = 24)
+    /// <param name="worldHeight">Blocks from bedrock to the sky, a multiple of 32</param>
+    public VoxelWorld(WorldStorage? storage, ITerrainGenerator? generator = null, int viewDistanceChunks = 24, int worldHeight = DefaultHeight)
     {
+        if (worldHeight <= 0 || worldHeight % Chunk.SlabHeight != 0)
+            throw new ArgumentException($"World height has to be a positive multiple of {Chunk.SlabHeight}", nameof(worldHeight));
+
+        Height = worldHeight;
         _storage = storage;
         _generator = generator ?? new DefaultTerrainGenerator();
 
-        // Generation is cheap next to meshing, so two threads keep up with any walking speed
-        _loader = new ChunkLoader(_storage, _generator, WorldHeight, Math.Clamp(Environment.ProcessorCount / 4, 1, 3));
+        // A tall world has more rock to carve caves through, so a few threads keep the frontier ahead of a sprint
+        _loader = new ChunkLoader(_storage, _generator, worldHeight, Math.Clamp(Environment.ProcessorCount / 3, 1, 4));
 
         SetViewDistance(viewDistanceChunks);
     }
@@ -188,10 +197,10 @@ public class VoxelWorld : IDisposable
 
     private Chunk Build(ChunkCoord coord, bool fromDisk)
     {
-        if (fromDisk && _storage != null && _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks, out Dictionary<int, byte[]>? refinements))
+        if (fromDisk && _storage != null && _storage.TryLoad(coord, Chunk.Size * Height * Chunk.Size, out byte[]? blocks, out Dictionary<int, byte[]>? refinements))
             return new Chunk(coord, blocks!, refinements!);
 
-        return new Chunk(coord, WorldHeight, _generator);
+        return new Chunk(coord, Height, _generator);
     }
 
     /// <summary>
@@ -282,11 +291,11 @@ public class VoxelWorld : IDisposable
         foreach ((ChunkCoord coord, Chunk chunk) in _chunks)
         {
             if (!chunk.Modified) continue;
-            allWritten &= _storage.Save(coord, chunk.RawBlocks, chunk.Refinements);
+            allWritten &= _storage.Save(coord, chunk.ToFlatArray(), chunk.Refinements);
         }
 
         foreach ((ChunkCoord coord, Chunk chunk) in _keptModified)
-            allWritten &= _storage.Save(coord, chunk.RawBlocks, chunk.Refinements);
+            allWritten &= _storage.Save(coord, chunk.ToFlatArray(), chunk.Refinements);
 
         // On failure leave the state untouched; the next attempt writes everything again
         if (!allWritten) return false;
@@ -345,7 +354,7 @@ public class VoxelWorld : IDisposable
             if (other.MeshRequested) continue;
 
             other.MeshRequested = true;
-            ChunkDirty?.Invoke(candidate, 0, WorldHeight - 1, MeshReason.Stream);
+            ChunkDirty?.Invoke(candidate, 0, Height - 1, MeshReason.Stream);
         }
     }
 
@@ -404,7 +413,7 @@ public class VoxelWorld : IDisposable
 
     public void Dispose() => _loader.Dispose();
 
-    public void Update(Camera3D camera, BoundingBox playerBounds, EngineSettings settings)
+    public void Update(Camera3D camera, BoundingBox playerBounds, TerrainSettings settings)
     {
         _settings = settings;
         _previewTimer = Math.Max(0f, _previewTimer - Raylib.GetFrameTime());
@@ -661,7 +670,7 @@ public class VoxelWorld : IDisposable
         int minBlockX = (int)MathF.Floor(center.X - reach);
         int maxBlockX = (int)MathF.Floor(center.X + reach);
         int minBlockY = Math.Max(0, (int)MathF.Floor(center.Y - reach));
-        int maxBlockY = Math.Min(WorldHeight - 1, (int)MathF.Floor(center.Y + reach));
+        int maxBlockY = Math.Min(Height - 1, (int)MathF.Floor(center.Y + reach));
         int minBlockZ = (int)MathF.Floor(center.Z - reach);
         int maxBlockZ = (int)MathF.Floor(center.Z + reach);
 
@@ -676,12 +685,12 @@ public class VoxelWorld : IDisposable
             var (cc, lx, lz) = WorldToChunk(bx, bz);
             if (!_chunks.TryGetValue(cc, out var chunk)) continue;
 
-            int id = chunk.GetLocal(lx, by, lz, WorldHeight);
+            int id = chunk.GetLocal(lx, by, lz, Height);
             bool solid = BlockRegistry.IsSolid(id);
             if (!add && !solid) continue; // air cannot be hollowed out any further
 
             // Copy-on-write: never change stored fields in place, worker threads read them
-            bool refined = chunk.TryGetRefinement(lx, by, lz, WorldHeight, out byte[] existing);
+            bool refined = chunk.TryGetRefinement(lx, by, lz, Height, out byte[] existing);
             byte[] working = solid
                 ? (refined ? (byte[])existing.Clone() : SubVoxels.NewFull())
                 : SubVoxels.NewEmpty();
@@ -737,17 +746,17 @@ public class VoxelWorld : IDisposable
             if (!solid)
             {
                 // Air gains substance, so create a block (SetLocal clears any old detail with it)
-                chunk.SetLocal(lx, by, lz, blockId, WorldHeight);
+                chunk.SetLocal(lx, by, lz, blockId, Height);
                 if (!SubVoxels.IsFull(working))
-                    chunk.SetRefinement(lx, by, lz, working, WorldHeight);
+                    chunk.SetRefinement(lx, by, lz, working, Height);
             }
             else if (SubVoxels.IsEmpty(working))
             {
-                chunk.SetLocal(lx, by, lz, BlockRegistry.Air, WorldHeight); // carved away completely
+                chunk.SetLocal(lx, by, lz, BlockRegistry.Air, Height); // carved away completely
             }
             else
             {
-                chunk.SetRefinement(lx, by, lz, working, WorldHeight); // a full field removes the entry itself
+                chunk.SetRefinement(lx, by, lz, working, Height); // a full field removes the entry itself
             }
 
             FireDirtyAround(cc, lx, lz, by);
@@ -824,7 +833,7 @@ public class VoxelWorld : IDisposable
         int gy = (int)MathF.Floor(target.Y);
         int gz = (int)MathF.Floor(target.Z);
 
-        if (gy < 0 || gy >= WorldHeight) return;
+        if (gy < 0 || gy >= Height) return;
         if (GetBlock(gx, gy, gz) != 0) return;
 
         _ghostCell = new VoxelRaycast.Vector3Int(gx, gy, gz);
@@ -871,23 +880,23 @@ public class VoxelWorld : IDisposable
 
     public int GetBlock(int wx, int wy, int wz)
     {
-        if (wy < 0 || wy >= WorldHeight) return 0;
+        if (wy < 0 || wy >= Height) return 0;
 
         var (cc, lx, lz) = WorldToChunk(wx, wz);
         if (!_chunks.TryGetValue(cc, out var chunk)) return 0;
 
-        return chunk.GetLocal(lx, wy, lz, WorldHeight);
+        return chunk.GetLocal(lx, wy, lz, Height);
     }
 
     public bool TryGetRefinement(int wx, int wy, int wz, out byte[] field)
     {
         field = null!;
-        if (wy < 0 || wy >= WorldHeight) return false;
+        if (wy < 0 || wy >= Height) return false;
 
         var (cc, lx, lz) = WorldToChunk(wx, wz);
         if (!_chunks.TryGetValue(cc, out var chunk)) return false;
 
-        return chunk.TryGetRefinement(lx, wy, lz, WorldHeight, out field);
+        return chunk.TryGetRefinement(lx, wy, lz, Height, out field);
     }
 
     /// <summary>Block type of a sub-cell (world sub-coordinates, 8 per block); 0 = air</summary>
@@ -898,7 +907,7 @@ public class VoxelWorld : IDisposable
         int wy = swy >> SubVoxels.Shift;
         int wz = swz >> SubVoxels.Shift;
 
-        if (wy < 0 || wy >= WorldHeight) return 0;
+        if (wy < 0 || wy >= Height) return 0;
 
         int id = GetBlock(wx, wy, wz);
         if (!BlockRegistry.IsSolid(id)) return 0;
@@ -909,12 +918,12 @@ public class VoxelWorld : IDisposable
 
     public void SetBlock(int wx, int wy, int wz, int id)
     {
-        if (wy < 0 || wy >= WorldHeight) return;
+        if (wy < 0 || wy >= Height) return;
 
         var (cc, lx, lz) = WorldToChunk(wx, wz);
         if (!_chunks.TryGetValue(cc, out var chunk)) return; // outside the loaded world
 
-        chunk.SetLocal(lx, wy, lz, id, WorldHeight);
+        chunk.SetLocal(lx, wy, lz, id, Height);
 
         FireDirtyAround(cc, lx, lz, wy);
     }

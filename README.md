@@ -1,6 +1,6 @@
 # VoxelTerraformer
 
-A voxel engine in C# on raylib, and three games built on it. The engine streams the world,
+A voxel engine in C# on raylib, and four games built on it. The engine streams the world,
 meshes it in the background, draws it and runs the menus; a game is a project under `Games/`
 that references the engine and nothing else.
 
@@ -12,9 +12,10 @@ Switch at any time with **ESC → Games**.
 
 | Game | What you do |
 | --- | --- |
-| **Free Walk** | The sandbox: build, dig, cycle the three voxel modes, turn the dials. |
-| **Rocket Storm** | Survive rocket waves in Smooth mode. Every impact leaves a crater, so dig in. |
-| **Solar System** | Planets two to four kilometres across, moons, real gravity. Fly out and blast craters that stay; two cores are molten. |
+| **Free Walk** | The sandbox: build, dig, cycle the three voxel modes, turn the dials. Mountains and caves 256 blocks tall, and a jetpack to get up them. |
+| **Rocket Storm** | Survive rocket waves in Smooth mode: standard, cluster, buster and seeker rockets. Dig in, shoot them down with the flak, climb the local leaderboard. |
+| **Solar System** | Planets two to four kilometres across with atmospheres, rings, an asteroid belt and real gravity. Fly with all six degrees of freedom, drop into an atmosphere and watch the sky close over you, park on the ground, blast craters that stay; two cores are molten. |
+| **Cave Dive** | Underground in the dark with a lantern, Smooth mode only. Dig through, leave lamps to light the way back, dig crystals out of the walls. |
 
 ## Three voxel modes, one world
 
@@ -30,16 +31,12 @@ built; carving follows the surface into the ground.
 
 ## How it scales
 
-Chunks of 32×64×32 blocks stream in a kilometre-wide circle, generated on worker threads and
-meshed once all their neighbours are present. Near the player a chunk is four sections of
+Chunks are columns 32 blocks across and up to 256 blocks tall, cut into slabs that cost nothing
+while they hold only sky or solid rock. They stream in a kilometre-wide circle, generated on
+worker threads and meshed once all their neighbours are present. Near the player a chunk is four sections of
 full-detail mesh and a stroke rebuilds only the sections it touched, ahead of everything else
 in the queue; further out a column is one mesh from a downsampled grid (2 m, then 4 m blocks).
 Meshes are indexed, 20 bytes per vertex, and drawn straight through rlgl.
-
-On an M2 Max the default view distance (32 chunks, ~3,200 loaded) sits at 3–5 ms per frame in
-100 MB of GPU memory in either mode, a sprint across the world keeps every frame under 6 ms,
-and switching the whole world to Smooth takes under two seconds. View distance and detail radius
-are dials in the tuning menu (**M**).
 
 ## Layout
 
@@ -65,13 +62,15 @@ See [Games/README.md](Games/README.md) for what a game gets from the engine.
 
 | Key | Action |
 | --- | --- |
-| **W A S D**, mouse | Move and look (fly in Solar System) |
-| **Shift** / **Space** | Sprint / jump (boost / climb in Solar System) |
+| **W A S D**, mouse | Move and look (fly in Solar System, where there is no up: pull round and you loop) |
+| **Shift** / **Space** | Sprint / jump, hold Space in the air for the jetpack (boost / up in Solar System) |
+| **Q** / **E** | Roll the ship in Solar System |
 | **LMB** / **RMB** | Remove / place, hold in Sculpt and Smooth; charge and fire in Solar System |
 | **Wheel**, **Ctrl + Wheel** | Build distance, brush size |
 | **V** | Switch voxel mode |
+| **F** | Flak in Rocket Storm, full stop in Solar System |
 | **Z** / **U** | Move the sun or change the clock speed |
-| **M**, **F3**, **ESC** | Tuning menu, debug overlay, pause menu (games, save, load, quit) |
+| **M**, **F3**, **ESC** | Tuning menu (scene and game dials), debug overlay, pause menu with display and control settings |
 
 ## Running it
 
@@ -80,11 +79,6 @@ Builds from [Releases](../../releases) are self-contained. From source:
 ```
 dotnet run -c Release --project Terraformer.csproj
 ```
-
-`--game RocketStorm` starts straight into a game. `--smoke [frames]` renders a few seconds,
-writes `smoke.png` and prints frame statistics. `--bench` flies Free Walk through a fixed script
-(still view, a fast run across the streaming and detail borders, brush strokes, the switch to
-Smooth) and prints the worst frame per phase. Tests: `dotnet test Tests/Tests.csproj`.
 
 ![Blocks mode](Screenshots/Image1.png)
 ![Smooth mode](Screenshots/Image2.png)

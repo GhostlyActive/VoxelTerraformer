@@ -47,6 +47,8 @@ public sealed class VoxelBodyRenderer : IDisposable
     /// Draw a body. The light is set per body, because out in space every sphere is hit by the sun
     /// from a different direction. <paramref name="shadowCasters"/> are spheres that can block that
     /// sunlight (xyz centre, w radius) — that is how a moon puts a shadow on its planet.
+    /// <paramref name="fogColor"/> is what distant faces fade into: black in vacuum, the sky
+    /// inside an atmosphere.
     /// </summary>
     public void Draw(
         VoxelBody body,
@@ -55,15 +57,18 @@ public sealed class VoxelBodyRenderer : IDisposable
         Vector3 sunColor,
         Vector3 ambient,
         Vector3 cameraPosition,
-        ReadOnlySpan<Vector4> shadowCasters)
+        ReadOnlySpan<Vector4> shadowCasters,
+        ReadOnlySpan<PointLight> lights = default,
+        Color fogColor = default)
     {
         Entry entry = EntryFor(body);
 
         Vector3 toBody = body.Position - sunPosition;
         Vector3 sunDirection = toBody.LengthSquared() < 1e-6f ? Vector3.UnitY : Vector3.Normalize(toBody);
 
-        shader.SetLighting(sunDirection, sunColor, ambient, new Color(0, 0, 0, 255), cameraPosition);
+        shader.SetLighting(sunDirection, sunColor, ambient, fogColor, cameraPosition);
         shader.SetShadowCasters(shadowCasters);
+        if (lights.Length > 0) shader.SetPointLights(lights);
 
         Matrix4x4 transform = TransformOf(body);
 

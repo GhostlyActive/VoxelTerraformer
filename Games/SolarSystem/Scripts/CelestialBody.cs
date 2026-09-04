@@ -38,6 +38,36 @@ public sealed class CelestialBody
     /// <summary>Material that must not be hit: reaching it sets the whole body off</summary>
     public byte VolatileCore { get; init; } = BlockRegistry.Air;
 
+    /// <summary>Haze around the body, drawn additively; alpha 0 for an airless rock</summary>
+    public Raylib_cs.Color Atmosphere { get; init; } = new(0, 0, 0, 0);
+
+    /// <summary>Height of the atmosphere as a share of the radius; the air is gone at the top of it</summary>
+    private const float AtmosphereShare = 0.45f;
+
+    public bool HasAtmosphere => Atmosphere.A > 0 && !Destroyed;
+
+    /// <summary>Distance from the centre at which the atmosphere begins</summary>
+    public float AtmosphereRadius => Body.SurfaceRadius * (1f + AtmosphereShare);
+
+    /// <summary>How deep into the atmosphere a point is: 0 at the top and beyond, 1 on the ground</summary>
+    public float DepthAt(Vector3 point)
+    {
+        if (!HasAtmosphere) return 0f;
+
+        float altitude = Vector3.Distance(point, Body.Position) - Body.SurfaceRadius;
+        return 1f - Math.Clamp(altitude / (Body.SurfaceRadius * AtmosphereShare), 0f, 1f);
+    }
+
+    /// <summary>
+    /// How much air there is at a point, for drag and heat: squared with depth, so the top is
+    /// thin and the last stretch down is where it gets thick.
+    /// </summary>
+    public float AirAt(Vector3 point)
+    {
+        float depth = DepthAt(point);
+        return depth * depth;
+    }
+
     public bool HasVolatileCore => VolatileCore != BlockRegistry.Air;
 
     /// <summary>Blown apart: no longer drawn, no longer hit, but its moons keep their orbits</summary>

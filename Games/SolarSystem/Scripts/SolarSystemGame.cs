@@ -12,9 +12,14 @@ namespace Games.SolarSystem;
 
 /// <summary>
 /// A solar system built from voxel spheres, at a scale where a planet fills the view when you get
-/// close. You fly freely between the bodies under their gravity and shoot them apart: every hit
-/// takes real voxels out, throws lasting rubble into orbit, and eventually opens the crust down to
-/// the core. Two of the planets have a molten core that does not appreciate being shot at.
+/// close. You fly between the bodies under their gravity with all six degrees of freedom and no
+/// up, and shoot them apart: every hit takes real voxels out, throws lasting rubble into orbit,
+/// and eventually opens the crust down to the core. Two of the planets have a molten core that
+/// does not appreciate being shot at.
+///
+/// Most planets have an atmosphere. Drop into one and the stars go, the sky takes its colour,
+/// the air slows the ship, and coming in fast heats the hull. Slow down against the ground and
+/// the ship parks there, carried along by the planet, until the next push of the throttle.
 /// </summary>
 [GameDefinition("SolarSystem", "Solar System", "Fly out and blast the planets back into voxels")]
 public sealed class SolarSystemGame : Game
@@ -46,6 +51,9 @@ public sealed class SolarSystemGame : Game
     /// <summary>Roughly one chunk of rubble per this many destroyed voxels</summary>
     private const int VoxelsPerDebrisChunk = 420;
 
+    /// <summary>Radius factor and share of the opacity per shell of an atmosphere, densest at the ground</summary>
+    private static readonly (float Scale, float Share)[] _atmosphereShells = { (1.03f, 1f), (1.07f, 0.55f), (1.13f, 0.28f) };
+
     /// <summary>Radius factor and opacity of the fireball's shells, brightest at the heart</summary>
     private static readonly (float Scale, float Alpha)[] _detonationShells =
     {
@@ -71,7 +79,47 @@ public sealed class SolarSystemGame : Game
         public static readonly byte RustMoon = BlockRegistry.Register("Rust moon", new Color(160, 106, 78, 255));
     }
 
+    private const string SettingsKey = "SolarSystem/Ship";
+
+    /// <summary>Up to this speed against a surface the ship parks instead of bouncing off</summary>
+    private const float LandingSpeed = 90f;
+
+    /// <summary>How far the hull reaches around the cockpit</summary>
+    private const float ShipClearance = 6f;
+
+    /// <summary>The ship's headlight, for the night side and the bottom of a crater</summary>
+    private const float HeadlightRange = 320f;
+
+    /// <summary>Share of the velocity the air takes per second at ground level</summary>
+    private const float AirDrag = 0.45f;
+
+    /// <summary>Speed through thick air from which the hull starts to glow, and the span up to a full glow</summary>
+    private const float HeatSpeed = 320f;
+    private const float HeatRange = 700f;
+
+    private static readonly Vector3 SpaceColor = new Vector3(4f, 5f, 12f) / 255f;
+
+    private enum Mode { Flying, Landed }
+
     private readonly List<CelestialBody> _bodies = new();
+    private SolarSettings _settings = null!;
+    private TuningSection? _tuning;
+
+    private Mode _mode = Mode.Flying;
+    private CelestialBody? _landedOn;
+
+    // The atmosphere the ship is in, if any: how much air there is, what the sky looks like from
+    // here, and how hot the hull is getting
+    private CelestialBody? _airBody;
+    private float _air;
+    private float _skyMix;
+    private Vector3 _skyColor;
+    private float _heat;
+    private float _heatSoundCooldown;
+    private Vector3 _shipLocal;
+    private Vector3 _shipPreviousPosition;
+    private OrbitField _rings = null!;
+    private OrbitField _belt = null!;
 
     private FreeFlyController _ship = null!;
     private VoxelCannon _cannon = null!;
@@ -92,9 +140,11 @@ public sealed class SolarSystemGame : Game
 
     public override IReadOnlyList<string> ControlHints => new[]
     {
-        "WASD + mouse: fly, Space/Ctrl: climb and descend",
-        "Shift: afterburner. Nothing slows you down out here, so watch your speed",
+        "WASD + mouse: fly, Space/Ctrl: up and down, Q/E: roll. There is no horizon: pull up long enough and you loop",
+        "Shift: afterburner. Nothing slows you down in vacuum, so watch your speed",
         "LMB: hold to charge a round, release to fire. A full charge cracks a crust open",
+        "Drop into an atmosphere slowly: the air brakes the ship, and a fast entry burns",
+        "Come in slowly against the ground and the ship parks there; any thrust takes off again",
         "F: full stop | F3: debug | ESC: menu",
     };
 
@@ -104,12 +154,16 @@ public sealed class SolarSystemGame : Game
 
     public override void Load()
     {
-        _shader = new TerrainShader
-        {
-            // Fog makes no sense in vacuum, so its range sits far behind every orbit
-            FogStart = 180000f,
-            FogEnd = 250000f,
-        };
+        _settings = Context.Store.Load<SolarSettings>(SettingsKey);
+        var defaults = new SolarSettings();
+        _tuning = Context.Tuning.AddSection("SHIP", () => Context.Store.Save(SettingsKey, _settings))
+            .Value("Thrust", () => _settings.Thrust, v => _settings.Thrust = v, defaults.Thrust, 20f, 50f, 2000f, "0")
+            .Value("Boost multiplier", () => _settings.BoostMultiplier, v => _settings.BoostMultiplier = v, defaults.BoostMultiplier, 0.5f, 1f, 12f, "0.0")
+            .Value("Max speed", () => _settings.MaxSpeed, v => _settings.MaxSpeed = v, defaults.MaxSpeed, 100f, 200f, 8000f, "0")
+            .Value("Full charge s", () => _settings.FullChargeSeconds, v => _settings.FullChargeSeconds = v, defaults.FullChargeSeconds, 0.1f, 0.3f, 5f, "0.0");
+
+        // The fog range is set every frame: far behind every orbit in vacuum, close in an atmosphere
+        _shader = new TerrainShader();
 
         _renderer = new VoxelBodyRenderer();
         _particles = new ParticleSystem();
@@ -121,8 +175,9 @@ public sealed class SolarSystemGame : Game
         Context.Audio.Define("impact", SfxShape.Explosion);
         Context.Audio.Define("bump", SfxShape.Hit);
         Context.Audio.Define("detonate", new SfxShape(2.2f, 150f, 25f, 0.95f, 1.8f));
+        Context.Audio.Define("entry", new SfxShape(0.5f, 110f, 70f, 1f, 1.3f));
 
-        _cannon = new VoxelCannon(_particles, Context.Audio);
+        _cannon = new VoxelCannon(_particles, Context.Audio, _settings);
 
         BuildSystem();
 
@@ -142,19 +197,23 @@ public sealed class SolarSystemGame : Game
     {
         CelestialBody ferra = Planet("Ferra", orbit: 10000f, grid: 160, radius: 74f, scale: 12f,
             speed: 0.045f, tilt: 0.04f, spin: 0.05f, gravity: 70f,
-            crust: Materials.Iron, core: Materials.IronCore, seed: 11);
+            crust: Materials.Iron, core: Materials.IronCore, seed: 11,
+            atmosphere: new Color(255, 170, 110, 14));
 
         CelestialBody verdis = Planet("Verdis", orbit: 16000f, grid: 224, radius: 104f, scale: 14f,
             speed: 0.030f, tilt: -0.08f, spin: 0.04f, gravity: 90f,
-            crust: Materials.Grass, core: Materials.Soil, seed: 27);
+            crust: Materials.Grass, core: Materials.Soil, seed: 27,
+            atmosphere: new Color(120, 180, 255, 20));
 
         CelestialBody cryon = Planet("Cryon", orbit: 23000f, grid: 224, radius: 104f, scale: 12f,
             speed: 0.022f, tilt: 0.19f, spin: 0.03f, gravity: 80f,
-            crust: Materials.Ice, core: Materials.IceCore, seed: 44);
+            crust: Materials.Ice, core: Materials.IceCore, seed: 44,
+            atmosphere: new Color(190, 225, 255, 16));
 
         CelestialBody tharos = Planet("Tharos", orbit: 32000f, grid: 256, radius: 120f, scale: 16f,
             speed: 0.015f, tilt: -0.13f, spin: 0.025f, gravity: 110f,
-            crust: Materials.Basalt, core: Materials.Magma, seed: 63, volatileCore: true);
+            crust: Materials.Basalt, core: Materials.Magma, seed: 63, volatileCore: true,
+            atmosphere: new Color(255, 120, 70, 14));
 
         CelestialBody ashkar = Planet("Ashkar", orbit: 42000f, grid: 192, radius: 88f, scale: 14f,
             speed: 0.011f, tilt: 0.27f, spin: 0.06f, gravity: 75f,
@@ -162,7 +221,8 @@ public sealed class SolarSystemGame : Game
 
         CelestialBody nyx = Planet("Nyx", orbit: 54000f, grid: 256, radius: 120f, scale: 14f,
             speed: 0.008f, tilt: -0.22f, spin: 0.02f, gravity: 95f,
-            crust: Materials.Sand, core: Materials.Sandstone, seed: 97);
+            crust: Materials.Sand, core: Materials.Sandstone, seed: 97,
+            atmosphere: new Color(255, 220, 160, 16));
 
         Moon("Kell", verdis, orbit: 4600f, grid: 64, radius: 28f, scale: 9f, speed: 0.20f, tilt: 0.32f,
             material: Materials.MoonRock, seed: 71);
@@ -187,11 +247,18 @@ public sealed class SolarSystemGame : Game
 
         Moon("Halo", ferra, orbit: 3600f, grid: 64, radius: 22f, scale: 6f, speed: 0.24f, tilt: 0.4f,
             material: Materials.IceMoon, seed: 121);
+
+        // A ring around the giant, and a belt of rubble between the ice world and the giant
+        float tharosRadius = tharos.Body.SurfaceRadius;
+        _rings = new OrbitField(tharos, tharosRadius * 1.55f, tharosRadius * 2.6f, 900, 8f, 42f,
+            new Color(150, 140, 130, 255), tilt: 0.38f, thickness: 40f, seed: 5);
+        _belt = new OrbitField(null, 26500f, 29500f, 600, 40f, 170f,
+            new Color(120, 100, 85, 255), tilt: 0.04f, thickness: 1200f, seed: 6);
     }
 
     private CelestialBody Planet(string name, float orbit, int grid, float radius, float scale,
         float speed, float tilt, float spin, float gravity, byte crust, byte core, int seed,
-        bool volatileCore = false)
+        bool volatileCore = false, Color atmosphere = default)
     {
         var body = new VoxelBody(name, grid, scale, spin);
         body.FillSphere(radius, crust, core, seed, roughness: 0.10f,
@@ -206,6 +273,7 @@ public sealed class SolarSystemGame : Game
             OrbitPhase = seed * 0.37f,
             SurfaceGravity = gravity,
             VolatileCore = volatileCore ? core : BlockRegistry.Air,
+            Atmosphere = atmosphere,
         };
 
         celestial.TakeCensus();
@@ -250,44 +318,218 @@ public sealed class SolarSystemGame : Game
             first.Body.Position + new Vector3(radius * 1.1f, radius * 0.6f, radius * 1.9f),
             Context.Settings)
         {
-            Thrust = 420f,
-            BoostMultiplier = 6f,
-            MaxSpeed = 2200f,
-
-            // A vacuum does not slow you down, and an orbit only survives without damping
+            // A vacuum does not slow you down, and an orbit only survives without damping; the
+            // air of an atmosphere sets this per frame
             Damping = 0f,
         };
+        ApplyShipSettings();
 
         _ship.PointAt(first.Body.Position);
         _camera = _ship.Update(0f);
+    }
+
+    private void ApplyShipSettings()
+    {
+        _ship.Thrust = _settings.Thrust;
+        _ship.BoostMultiplier = _settings.BoostMultiplier;
+        _ship.MaxSpeed = _settings.MaxSpeed;
     }
 
     public override void Update(float dt)
     {
         _time += dt;
         _flash = MathF.Max(0f, _flash - dt * 1.4f);
+        ApplyShipSettings();
 
         // Planets before their moons: a moon's orbit hangs off its planet's current position
         foreach (CelestialBody body in _bodies)
             body.Advance(dt);
 
         UpdateDetonations(dt);
+        UpdateAtmosphere(dt);
 
-        _ship.ExternalAcceleration = GravityAt(_ship.Position);
-        _camera = _ship.Update(dt);
+        // The ground under the parked ship is going: off, whether you like it or not
+        if (_mode == Mode.Landed && _landedOn is { } gone && (gone.Detonating || gone.Destroyed))
+            Fling(gone);
 
-        if (Raylib.IsKeyPressed(KeyboardKey.F)) _ship.Halt();
-
-        if (Raylib.IsMouseButtonDown(MouseButton.Left)) _cannon.Hold(dt);
-        if (Raylib.IsMouseButtonReleased(MouseButton.Left))
-            _cannon.Release(_ship.Position, _ship.Forward, _ship.Velocity);
+        if (_mode == Mode.Flying) UpdateFlying(dt);
+        else UpdateLanded(dt);
 
         _cannon.Update(dt, TryHit);
         _debris.Update(dt, GravityAt, IsInsideSolid);
         _shockwaves.Update(dt);
         _particles.Update(null, dt);
+    }
+
+    private void UpdateFlying(float dt)
+    {
+        _shipPreviousPosition = _ship.Position;
+        _ship.ExternalAcceleration = GravityAt(_ship.Position);
+        _camera = _ship.Update(dt);
+
+        // A hull in the fire shakes; the ship itself stays where it is
+        if (_heat > 0.05f)
+        {
+            Vector3 jitter = RandomDirection() * (_heat * 2.5f);
+            _camera.Position += jitter;
+            _camera.Target += jitter;
+        }
+
+        if (Raylib.IsKeyPressed(KeyboardKey.F)) _ship.Halt();
+        UpdateCannonInput(dt);
 
         KeepShipOutOfSolids();
+        TryLand();
+    }
+
+    private void UpdateLanded(float dt)
+    {
+        CelestialBody body = _landedOn!;
+        Vector3 anchor = body.Body.ToWorld(_shipLocal);
+
+        // Mouse look keeps working; any thrust is the take-off
+        _ship.ExternalAcceleration = Vector3.Zero;
+        _ship.Teleport(anchor);
+        _camera = _ship.Update(dt);
+
+        if (_ship.Speed > 0.5f)
+        {
+            TakeOff(body);
+            return;
+        }
+
+        _ship.Teleport(anchor);
+        UpdateCannonInput(dt);
+    }
+
+    private void UpdateCannonInput(float dt)
+    {
+        if (Raylib.IsMouseButtonDown(MouseButton.Left)) _cannon.Hold(dt);
+        if (Raylib.IsMouseButtonReleased(MouseButton.Left))
+            _cannon.Release(_ship.Position, _ship.Forward, _ship.Velocity);
+    }
+
+    /// <summary>
+    /// Entering an atmosphere is the arrival: the stars go, the sky takes the haze's colour lit by
+    /// the sun, the far bodies fade into it, and the air slows the ship. Come in fast and the hull
+    /// heats up.
+    /// </summary>
+    private void UpdateAtmosphere(float dt)
+    {
+        _airBody = null;
+        float depth = 0f;
+
+        foreach (CelestialBody celestial in _bodies)
+        {
+            float candidate = celestial.DepthAt(_ship.Position);
+            if (candidate <= depth) continue;
+
+            depth = candidate;
+            _airBody = celestial;
+        }
+
+        // The sky builds quickly from the top of the atmosphere, so crossing into it is a moment;
+        // the air itself only gets thick towards the ground
+        _skyMix = 1f - (1f - depth) * (1f - depth);
+        _air = depth * depth;
+        _ship.Damping = _air * AirDrag;
+
+        float relativeSpeed = 0f;
+        Vector3 travel = Vector3.Zero;
+
+        if (_airBody != null)
+        {
+            Vector3 up = Vector3.Normalize(_ship.Position - _airBody.Body.Position);
+            Vector3 toSun = -Vector3.Normalize(_airBody.Body.Position);
+            float daylight = Math.Clamp(Vector3.Dot(up, toSun) * 1.3f + 0.5f, 0.05f, 1f);
+
+            Color tint = _airBody.Atmosphere;
+            _skyColor = new Vector3(tint.R, tint.G, tint.B) / 255f * daylight;
+
+            travel = _ship.Velocity - _airBody.Velocity;
+            relativeSpeed = travel.Length();
+        }
+
+        float targetHeat = _air * Math.Clamp((relativeSpeed - HeatSpeed) / HeatRange, 0f, 1f);
+        _heat += (targetHeat - _heat) * MathF.Min(1f, 3f * dt);
+
+        _heatSoundCooldown = MathF.Max(0f, _heatSoundCooldown - dt);
+        if (_heat < 0.08f || _airBody == null || relativeSpeed < 1f) return;
+
+        // Embers come off the hull ahead of the cockpit and streak back past it, off to the
+        // side so none of them ends up as a block in front of the eye
+        Vector3 heading = travel / relativeSpeed;
+        Vector3 side = Vector3.Cross(heading, RandomDirection());
+        if (side.LengthSquared() < 1e-4f) side = _ship.Right;
+        side = Vector3.Normalize(side) * (10f + Random.Shared.NextSingle() * 8f);
+
+        _particles.SpawnTrail(
+            _ship.Position + heading * 30f + side,
+            _airBody.Velocity - heading * relativeSpeed * 0.6f,
+            new Color((byte)255, (byte)(120 + 80 * _heat), (byte)60, (byte)255),
+            0.8f + 1.2f * _heat,
+            count: 3);
+
+        if (_heatSoundCooldown > 0f) return;
+
+        Context.Audio.Play("entry", 0.25f + 0.6f * _heat, 0.7f + 0.4f * _heat);
+        _heatSoundCooldown = 0.35f;
+    }
+
+    /// <summary>
+    /// Slow against solid ground, in whatever direction the hull touches it: the ship parks, and
+    /// from here on the planet carries it. Works on the open surface and in a crater alike.
+    /// </summary>
+    private void TryLand()
+    {
+        foreach (CelestialBody celestial in _bodies)
+        {
+            if (celestial.Destroyed || celestial.Detonating) continue;
+
+            VoxelBody body = celestial.Body;
+            float reach = body.BoundingRadius + ShipClearance * 2f;
+            if (Vector3.DistanceSquared(_ship.Position, body.Position) > reach * reach) continue;
+
+            Vector3 relative = _ship.Velocity - celestial.Velocity;
+            float relativeSpeed = relative.Length();
+            if (relativeSpeed < 0.5f || relativeSpeed > LandingSpeed) continue;
+
+            // Touching means solid within the hull's reach along the way the ship moves
+            Vector3 heading = relative / relativeSpeed;
+            if (!body.IsSolidAt(_ship.Position + heading * ShipClearance)) continue;
+
+            _shipLocal = body.ToLocal(_ship.Position);
+            _landedOn = celestial;
+            _mode = Mode.Landed;
+            _ship.Halt();
+
+            _particles.SpawnSmoke(_ship.Position + heading * ShipClearance, -heading * 6f, 24, 2.5f);
+            Context.Audio.Play("bump", 0.45f, 0.6f);
+            return;
+        }
+    }
+
+    private void TakeOff(CelestialBody body)
+    {
+        _ship.SetVelocity(body.Velocity + _ship.Velocity);
+        _particles.SpawnSmoke(_ship.Position, -_ship.Forward * 4f, 30, 3f);
+        Context.Audio.Play("shot", 0.3f, 0.5f);
+
+        _mode = Mode.Flying;
+        _landedOn = null;
+    }
+
+    /// <summary>The planet under the parked ship is coming apart: off and away</summary>
+    private void Fling(CelestialBody body)
+    {
+        Vector3 up = body.Body.UpAt(_ship.Position);
+
+        _landedOn = null;
+        _mode = Mode.Flying;
+
+        _ship.Teleport(_ship.Position + up * 20f);
+        _ship.SetVelocity(body.Velocity + up * 400f);
+        _flash = MathF.Max(_flash, 0.6f);
     }
 
     /// <summary>Everything a round can run into: loose rubble first, then the bodies themselves</summary>
@@ -503,9 +745,10 @@ public sealed class SolarSystemGame : Game
     }
 
     /// <summary>
-    /// Collision with the bodies: the ship is pushed straight outwards until it is clear again.
-    /// A real physics body would be overkill here; the point is only that you cannot end up
-    /// stuck inside a planet.
+    /// Collision with the bodies: a ship that ends up in rock is set back to the last free spot
+    /// along the way it came, which works in a crater as well as on the open surface. A real
+    /// physics body would be overkill here; the point is only that you cannot end up stuck
+    /// inside a wall.
     /// </summary>
     private void KeepShipOutOfSolids()
     {
@@ -528,50 +771,114 @@ public sealed class SolarSystemGame : Game
             if (Vector3.DistanceSquared(_ship.Position, body.Position) > reach * reach) continue;
             if (!body.IsSolidAt(_ship.Position)) continue;
 
-            Vector3 delta = _ship.Position - body.Position;
-            Vector3 outward = delta.LengthSquared() < 1e-3f ? Vector3.UnitY : Vector3.Normalize(delta);
-
-            // Step outwards until the spot is free, at most as far as the bounding sphere
+            Vector3 velocity = _ship.Velocity;
             Vector3 position = _ship.Position;
-            for (int step = 0; step < 96 && body.IsSolidAt(position); step++)
-                position += outward * body.VoxelScale;
+
+            if (!body.IsSolidAt(_shipPreviousPosition))
+            {
+                // Back along this frame's move until the hull is clear, then stop against the wall
+                Vector3 back = _shipPreviousPosition - position;
+                for (int step = 1; step <= 16 && body.IsSolidAt(position); step++)
+                    position = _ship.Position + back * (step / 16f);
+            }
+            else
+            {
+                // No free spot behind us (a wall closed in): push straight outwards as a last resort
+                Vector3 delta = position - body.Position;
+                Vector3 outward = delta.LengthSquared() < 1e-3f ? Vector3.UnitY : Vector3.Normalize(delta);
+                for (int step = 0; step < 96 && body.IsSolidAt(position); step++)
+                    position += outward * body.VoxelScale;
+            }
 
             _ship.Teleport(position);
-            Context.Audio.Play("bump", 0.6f);
+            _ship.SetVelocity(celestial.Velocity + (velocity - celestial.Velocity) * 0.1f);
+            Context.Audio.Play("bump", Math.Clamp(velocity.Length() / 400f, 0.2f, 0.8f));
             return;
         }
     }
 
-    public override void DrawBackground() => Raylib.ClearBackground(new Color(4, 5, 12, 255));
+    /// <summary>The colour of the sky from here: black space, or the atmosphere lit by the sun</summary>
+    private Color SkyColor => ToColor(Vector3.Lerp(SpaceColor, _skyColor, _skyMix));
+
+    public override void DrawBackground() => Raylib.ClearBackground(SkyColor);
 
     public override void DrawWorld()
     {
-        _stars.Draw(_camera, 1f, _time);
+        // A daytime sky hides the stars long before it is fully there
+        _stars.Draw(_camera, Math.Clamp(1f - _skyMix * 2f, 0f, 1f), _time);
 
         DrawOrbits();
         DrawSun();
 
+        _rings.Draw(_time);
+        _belt.Draw(_time);
+
         _renderer.BeginFrame();
 
         var sunColor = new Vector3(1.35f, 1.24f, 1.05f);
-        var ambient = new Vector3(0.07f, 0.08f, 0.12f);
+
+        // The sky lights the ground from every side; in vacuum only the sun does
+        Vector3 ambient = new Vector3(0.07f, 0.08f, 0.12f) + _skyColor * (0.35f * _skyMix);
+
+        // In vacuum the fog sits far behind every orbit. In an atmosphere it closes in and takes
+        // the sky's colour, so the horizon and the other bodies fade into the haze.
+        float clear = MathF.Pow(1f - _skyMix, 6f);
+        _shader.FogEnd = 3500f + (250000f - 3500f) * clear;
+        _shader.FogStart = _shader.FogEnd * 0.12f;
+        Color fog = SkyColor;
 
         Span<Vector4> casters = stackalloc Vector4[TerrainShader.MaxShadowCasters];
+
+        // The headlight: on the night side the sun is no help, and a crater is black without it
+        ReadOnlySpan<PointLight> headlight = stackalloc PointLight[]
+        {
+            new PointLight(_camera.Position, HeadlightRange, new Vector3(1.0f, 0.96f, 0.86f)),
+        };
 
         foreach (CelestialBody celestial in _bodies)
         {
             if (celestial.Destroyed) continue;
 
             int count = CollectShadowCasters(celestial, casters);
-            _renderer.Draw(celestial.Body, _shader, Vector3.Zero, sunColor, ambient, _camera.Position, casters[..count]);
+            _renderer.Draw(celestial.Body, _shader, Vector3.Zero, sunColor, ambient, _camera.Position, casters[..count], headlight, fog);
         }
 
         DrawDetonations();
+        DrawAtmospheres();
 
         _cannon.Draw();
         _debris.Draw();
         _shockwaves.Draw();
         _particles.Draw();
+    }
+
+    /// <summary>
+    /// A haze in nested additive shells, brightest at the surface. Drawn without back-face
+    /// culling so that from the ground the same shells become the sky's tint overhead.
+    /// </summary>
+    private void DrawAtmospheres()
+    {
+        Raylib.BeginBlendMode(BlendMode.Additive);
+
+        foreach (CelestialBody celestial in _bodies)
+        {
+            if (celestial.Destroyed || celestial.Atmosphere.A == 0) continue;
+
+            Color tint = celestial.Atmosphere;
+            float radius = celestial.Body.SurfaceRadius;
+
+            // From inside the haze only the back faces are left to see, so they get drawn there
+            bool inside = Vector3.Distance(_camera.Position, celestial.Body.Position) < radius * 1.15f;
+            if (inside) Rlgl.DisableBackfaceCulling();
+
+            foreach ((float scale, float share) in _atmosphereShells)
+                Raylib.DrawSphereEx(celestial.Body.Position, radius * scale, 24, 24,
+                    new Color(tint.R, tint.G, tint.B, (byte)(tint.A * share * (inside ? 1.5f : 1f))));
+
+            if (inside) Rlgl.EnableBackfaceCulling();
+        }
+
+        Raylib.EndBlendMode();
     }
 
     /// <summary>
@@ -659,16 +966,17 @@ public sealed class SolarSystemGame : Game
         Raylib.EndBlendMode();
     }
 
-    /// <summary>Orbits as thin rings: without them you lose all sense of place out here</summary>
+    /// <summary>Orbits as thin rings: without them you lose all sense of place out here. Gone under a sky.</summary>
     private void DrawOrbits()
     {
+        var color = new Color((byte)70, (byte)110, (byte)150, (byte)(90 * (1f - _skyMix)));
+
         foreach (CelestialBody celestial in _bodies)
         {
             if (celestial.Parent != null) continue;
 
             float tiltDegrees = celestial.OrbitTilt * (180f / MathF.PI);
-            Raylib.DrawCircle3D(Vector3.Zero, celestial.OrbitRadius, Vector3.UnitX, 90f - tiltDegrees,
-                new Color(70, 110, 150, 90));
+            Raylib.DrawCircle3D(Vector3.Zero, celestial.OrbitRadius, Vector3.UnitX, 90f - tiltDegrees, color);
         }
     }
 
@@ -680,8 +988,12 @@ public sealed class SolarSystemGame : Game
         if (_flash > 0f)
             Raylib.DrawRectangle(0, 0, width, height, new Color((byte)255, (byte)220, (byte)170, (byte)(150 * _flash)));
 
+        if (_heat > 0.02f)
+            Raylib.DrawRectangle(0, 0, width, height, new Color((byte)255, (byte)120, (byte)40, (byte)(120 * _heat)));
+
         Hud.Crosshair(width, height, new Color(255, 220, 120, 255));
         DrawChargeMeter(width, height);
+        DrawAtmosphereReadout(width);
 
         CelestialBody? target = FindTarget();
         if (target != null)
@@ -703,13 +1015,24 @@ public sealed class SolarSystemGame : Game
 
         float gravity = GravityAt(_ship.Position).Length();
 
-        Hud.Text($"{_ship.Speed:0} m/s{(_ship.Boosting ? "  BOOST" : "")}", 16, height - 98, 20,
-            _ship.Boosting ? Hud.Warning : Hud.Ink);
-        Hud.Text($"gravity {gravity:0.0} m/s2", 16, height - 72, 18,
-            gravity > 20f ? Hud.Warning : Hud.Ink);
-        Hud.Text($"Hits {_hits} | Voxels blasted {_voxelsDestroyed}", 16, height - 46, 18);
+        switch (_mode)
+        {
+            case Mode.Flying:
+                Hud.Text($"{_ship.Speed:0} m/s{(_ship.Boosting ? "  BOOST" : "")}", 16, height - 98, 20,
+                    _ship.Boosting ? Hud.Warning : Hud.Ink);
+                Hud.Text($"gravity {gravity:0.0} m/s2", 16, height - 72, 18,
+                    gravity > 20f ? Hud.Warning : Hud.Ink);
+                Hud.Centered("Hold LMB to charge | Q/E roll | Shift boost | F full stop | ESC menu", width / 2, height - 40, 16);
+                break;
 
-        Hud.Centered("Hold LMB to charge | Shift boost | F full stop | ESC menu", width / 2, height - 40, 16);
+            case Mode.Landed:
+                Hud.Text($"PARKED on {_landedOn!.Name}", 16, height - 98, 20, Hud.Accent);
+                Hud.Text("the planet carries the ship along", 16, height - 72, 18);
+                Hud.Centered("Any thrust takes off | Hold LMB to charge | ESC menu", width / 2, height - 40, 16);
+                break;
+        }
+
+        Hud.Text($"Hits {_hits} | Voxels blasted {_voxelsDestroyed}", 16, height - 46, 18);
 
         if (!Context.DebugOverlay) return;
 
@@ -717,6 +1040,30 @@ public sealed class SolarSystemGame : Game
                  $"Waves {_shockwaves.Count} | Particles {_particles.ActiveParticles}",
             16, 184, 18, Color.SkyBlue);
     }
+
+    /// <summary>Where the ship is in an atmosphere, top centre, and the warning when the hull burns</summary>
+    private void DrawAtmosphereReadout(int width)
+    {
+        if (_airBody == null || _skyMix < 0.02f) return;
+
+        Color tint = _airBody.Atmosphere;
+        var air = new Color(tint.R, tint.G, tint.B, (byte)255);
+
+        Hud.Centered($"ATMOSPHERE OF {_airBody.Name.ToUpperInvariant()}", width / 2, 40, 22, air);
+        Hud.Bar(width / 2 - 90, 68, 180, 12, _air, air);
+
+        if (_heat < 0.15f) return;
+
+        // Blinks faster the hotter it gets
+        if (MathF.Sin(_time * (8f + 12f * _heat)) < -0.2f) return;
+        Hud.Centered("HULL HEATING - SLOW DOWN", width / 2, 90, 20, Hud.Warning);
+    }
+
+    private static Color ToColor(Vector3 color) => new(
+        (byte)Math.Clamp(color.X * 255f, 0f, 255f),
+        (byte)Math.Clamp(color.Y * 255f, 0f, 255f),
+        (byte)Math.Clamp(color.Z * 255f, 0f, 255f),
+        (byte)255);
 
     /// <summary>
     /// How far the crater you are aiming into has already eaten through the crust. This is the only
@@ -830,6 +1177,7 @@ public sealed class SolarSystemGame : Game
 
     public override void Unload()
     {
+        if (_tuning != null) Context.Tuning.RemoveSection(_tuning);
         _renderer.Dispose();
         _shader.Unload();
     }

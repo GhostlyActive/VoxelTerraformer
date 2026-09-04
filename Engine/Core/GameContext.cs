@@ -1,6 +1,7 @@
 using Raylib_cs;
 using VoxelEngine.Audio;
 using VoxelEngine.Config;
+using VoxelEngine.UI;
 using VoxelEngine.World;
 
 namespace VoxelEngine.Core;
@@ -14,7 +15,7 @@ public sealed class GameContext
     private readonly GameHost _host;
 
     internal GameContext(GameHost host, GameEntry entry, EngineSettings settings, AudioBank audio,
-        UserDataPaths paths, FrameProfiler profiler, bool benchmark)
+        UserDataPaths paths, SettingsStore store, TuningMenu tuning, FrameProfiler profiler, bool benchmark)
     {
         _host = host;
         Id = entry.Id;
@@ -22,6 +23,8 @@ public sealed class GameContext
         Settings = settings;
         Audio = audio;
         Paths = paths;
+        Store = store;
+        Tuning = tuning;
         Profiler = profiler;
         Benchmark = benchmark;
     }
@@ -31,10 +34,16 @@ public sealed class GameContext
 
     public string Title { get; }
 
-    /// <summary>Shared tuning values from the menu on M</summary>
+    /// <summary>The engine's own dials: mouse, field of view, view distance</summary>
     public EngineSettings Settings { get; }
 
     public AudioBank Audio { get; }
+
+    /// <summary>Saved sections of tuning values; a game keeps its own under a name of its choice</summary>
+    public SettingsStore Store { get; }
+
+    /// <summary>The menu on M; add a section for the game's own dials in Load and remove it in Unload</summary>
+    public TuningMenu Tuning { get; }
 
     /// <summary>The product's folders in the user profile: settings and save slots</summary>
     public UserDataPaths Paths { get; }
@@ -56,8 +65,9 @@ public sealed class GameContext
 
     internal static string AssetRoot(string gameId) => Path.Combine(AppContext.BaseDirectory, "Games", gameId, "Assets");
 
-    /// <summary>A save slot of this product; every game picks a name of its own</summary>
-    public WorldStorage OpenStorage(string slot) => new(Paths.SaveDirectory(slot));
+    /// <summary>A save slot of this product; every game picks a name of its own. The height has to match the world's.</summary>
+    public WorldStorage OpenStorage(string slot, int worldHeight = VoxelWorld.DefaultHeight)
+        => new(Paths.SaveDirectory(slot), worldHeight);
 
     /// <summary>Short message at the bottom centre; fades out on its own</summary>
     public void ShowStatus(string text) => _host.ShowStatus(text);

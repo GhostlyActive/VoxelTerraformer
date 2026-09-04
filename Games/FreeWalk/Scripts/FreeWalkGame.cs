@@ -9,7 +9,8 @@ namespace Games.FreeWalk;
 
 /// <summary>
 /// The sandbox: an endless voxel world with no goal and no enemies. Build, dig, switch between
-/// the three voxel modes, turn the dials. The game the project opens with.
+/// the three voxel modes, turn the dials, and get up the mountains with the jetpack. The game
+/// the project opens with.
 /// </summary>
 [GameDefinition("FreeWalk", "Free Walk", "Sandbox: build, dig and switch between the voxel modes")]
 public sealed class FreeWalkGame : Game
@@ -27,6 +28,7 @@ public sealed class FreeWalkGame : Game
     public override IReadOnlyList<string> ControlHints => new[]
     {
         "WASD + mouse: walk and look, Shift sprints, Space jumps",
+        "Hold Space in the air: jetpack. The tank refills on the ground",
         "LMB / RMB: remove and place (hold them in Sculpt and Smooth)",
         "Wheel: build reach | Ctrl+Wheel: brush size",
         "V: voxel mode | Z/U: move the sun | M: tuning | F3: debug",
@@ -42,6 +44,7 @@ public sealed class FreeWalkGame : Game
             Mode = TerrainMode.Blocks,
             RunDayNight = false,
             SunAngleDegrees = NoonAngle,
+            Jetpack = true,
         });
 
         if (Context.Benchmark) _benchmark = new FreeWalkBenchmark(_scene, Context, new Vector3(128, 60, 128));
@@ -64,7 +67,7 @@ public sealed class FreeWalkGame : Game
 
     public override void DrawHud()
     {
-        Hud.Text("WASD move | Shift sprint | Space jump | LMB remove | RMB place | V mode", 10, 40, 20, Color.Black);
+        Hud.Text("WASD move | Shift sprint | Space jump, hold for jetpack | LMB remove | RMB place | V mode", 10, 40, 20, Color.Black);
         Hud.Text("Wheel: reach | Ctrl+Wheel: brush | Z/U sun | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
         Hud.Text(_scene.DayNight.SunLabel, 10, 90, 20, Color.Black);
 
@@ -82,20 +85,33 @@ public sealed class FreeWalkGame : Game
         }
 
         Hud.Crosshair(Context.ScreenWidth, Context.ScreenHeight);
+        DrawFuel();
 
-        float radius = Context.Settings.SculptRadius;
-        float reach = Context.Settings.BuildReach;
+        float radius = _scene.Settings.SculptRadius;
+        float reach = _scene.Settings.BuildReach;
         string tool = _scene.Mode switch
         {
             TerrainMode.Blocks => $"Reach {reach:0}",
             TerrainMode.Sculpt => $"Brush r={radius:0.0} | Reach {reach:0}",
-            _ => $"Brush r={radius:0.0} soft={Context.Settings.BrushSoftness:0.0} | Reach {reach:0}",
+            _ => $"Brush r={radius:0.0} soft={_scene.Settings.BrushSoftness:0.0} | Reach {reach:0}",
         };
 
         ModeTransition? wave = _scene.Transition;
         ModeIndicator.Draw(Context.ScreenWidth / 2, Context.ScreenHeight - 74, _scene.Mode, _scene.SinceModeSwitch,
             wave?.Progress01(_scene.FogEnd) ?? 1f, wave != null && wave.Remeshes, "V");
         Hud.Centered(tool, Context.ScreenWidth / 2, Context.ScreenHeight - 34, 16);
+    }
+
+    /// <summary>The jetpack's tank, bottom left; it flashes when the jets are on</summary>
+    private void DrawFuel()
+    {
+        float fuel = _scene.Player.Fuel01;
+        bool burning = _scene.Player.JetpackBurning;
+
+        Color color = fuel > 0.3f ? Hud.Accent : Hud.Warning;
+        if (burning) color = new Color(255, 230, 150, 255);
+
+        Hud.Bar(16, Context.ScreenHeight - 60, 180, 16, fuel, color, burning ? "JETPACK" : $"jetpack {fuel * 100f:0}%");
     }
 
     public override string DebugReport()
@@ -109,7 +125,7 @@ public sealed class FreeWalkGame : Game
         var solidAbove = new System.Text.StringBuilder();
         for (int x = (int)MathF.Floor(position.X - 0.3f); x <= (int)MathF.Floor(position.X + 0.3f); x++)
         for (int z = (int)MathF.Floor(position.Z - 0.3f); z <= (int)MathF.Floor(position.Z + 0.3f); z++)
-        for (int y = 12; y < VoxelWorld.WorldHeight; y++)
+        for (int y = 12; y < _scene.World.Height; y++)
             if (BlockRegistry.IsSolid(_scene.World.GetBlock(x, y, z))) solidAbove.Append($" ({x},{y},{z})");
         report.AppendLine($"[report] solid blocks above y=12 under the player:{solidAbove}");
         report.AppendLine($"[report] loaded {_scene.World.LoadedChunkCount} pending {_scene.World.PendingLoads} meshed {_scene.Meshes.MeshedChunks} queue {_scene.Meshes.PendingChunks} tris {_scene.Meshes.TotalTriangles} gpu {_scene.Meshes.GpuBytes / (1024 * 1024)} MB draws {_scene.Meshes.DrawCalls}");

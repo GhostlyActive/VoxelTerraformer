@@ -19,18 +19,22 @@ public readonly record struct PauseResult(PauseAction Action, string? GameId = n
 }
 
 /// <summary>
-/// The ESC menu, in two pages: the main page (continue, games, save, load, quit) and the game
-/// list. While it is open the game is paused; the host reads <see cref="IsOpen"/> for that.
+/// The ESC menu, in three pages: the main page (continue, games, settings, save, load, quit),
+/// the game list, and the settings that apply to every game. While it is open the game is
+/// paused; the host reads <see cref="IsOpen"/> for that.
 /// </summary>
 public sealed class PauseMenu
 {
-    private enum Page { Root, Games }
+    private enum Page { Root, Games, Settings }
 
     private readonly GameRegistry _registry;
 
     private Page _page = Page.Root;
     private int _selected;
     private string[] _entries = Array.Empty<string>();
+
+    /// <summary>The dials of the settings page; the host fills them with what applies to every game</summary>
+    public SettingsPanel Settings { get; } = new();
 
     /// <summary>The game currently running; marked in the list</summary>
     public string CurrentGameId { get; set; } = "";
@@ -55,8 +59,8 @@ public sealed class PauseMenu
     {
         if (Raylib.IsKeyPressed(KeyboardKey.Escape))
         {
-            // From the game list, ESC goes back one level instead of straight into the game
-            if (IsOpen && _page == Page.Games) OpenPage(Page.Root);
+            // From a sub page, ESC goes back one level instead of straight into the game
+            if (IsOpen && _page != Page.Root) OpenPage(Page.Root);
             else
             {
                 IsOpen = !IsOpen;
@@ -67,6 +71,12 @@ public sealed class PauseMenu
         }
 
         if (!IsOpen) return PauseResult.None;
+
+        if (_page == Page.Settings)
+        {
+            Settings.Update();
+            return PauseResult.None;
+        }
 
         if (Raylib.IsKeyPressed(KeyboardKey.Down)) _selected = (_selected + 1) % _entries.Length;
         if (Raylib.IsKeyPressed(KeyboardKey.Up)) _selected = (_selected - 1 + _entries.Length) % _entries.Length;
@@ -87,6 +97,10 @@ public sealed class PauseMenu
 
             case "Games":
                 OpenPage(Page.Games);
+                return PauseResult.None;
+
+            case "Settings":
+                OpenPage(Page.Settings);
                 return PauseResult.None;
 
             case "Save world":
@@ -122,9 +136,17 @@ public sealed class PauseMenu
 
     private void OpenPage(Page page)
     {
+        // Leaving the settings is what writes them to disk
+        if (_page == Page.Settings && page != Page.Settings) Settings.SaveAll();
+
         _page = page;
         _selected = 0;
-        _entries = page == Page.Games ? GameEntries() : RootEntries();
+        _entries = page switch
+        {
+            Page.Games => GameEntries(),
+            Page.Settings => Array.Empty<string>(),
+            _ => RootEntries(),
+        };
 
         if (page != Page.Games) return;
 
@@ -136,7 +158,7 @@ public sealed class PauseMenu
 
     private string[] RootEntries()
     {
-        var entries = new List<string> { "Continue", "Games" };
+        var entries = new List<string> { "Continue", "Games", "Settings" };
         if (SavingAvailable)
         {
             entries.Add("Save world");
@@ -157,6 +179,12 @@ public sealed class PauseMenu
         // dark veil over the frozen game
         Raylib.DrawRectangle(0, 0, screenWidth, screenHeight, new Color(5, 8, 14, 150));
 
+        if (_page == Page.Settings)
+        {
+            DrawSettings(screenWidth, screenHeight);
+            return;
+        }
+
         bool showHints = _page == Page.Root && ControlHints.Count > 0;
 
         int width = _page == Page.Games ? 460 : 520;
@@ -166,14 +194,9 @@ public sealed class PauseMenu
         int x = (screenWidth - width) / 2;
         int y = (screenHeight - height) / 2;
 
-        Raylib.DrawRectangle(x, y, width, height, new Color(10, 14, 22, 235));
-        Raylib.DrawRectangleLines(x, y, width, height, new Color(95, 225, 235, 200));
-
         string title = _page == Page.Games ? "GAMES" : "PAUSED";
         string hint = _page == Page.Games ? "Arrows + Enter | ESC: back" : "Arrows + Enter | ESC: resume";
-
-        Raylib.DrawText(title, x + 20, y + 16, 30, new Color(95, 225, 235, 255));
-        Raylib.DrawText(hint, x + 20, y + 52, 14, new Color(180, 190, 200, 255));
+        DrawFrame(x, y, width, height, title, hint);
 
         for (int i = 0; i < _entries.Length; i++)
         {
@@ -205,5 +228,28 @@ public sealed class PauseMenu
 
         for (int i = 0; i < ControlHints.Count; i++)
             Raylib.DrawText(ControlHints[i], x + 24, hintsTop + 12 + i * 20, 15, new Color(160, 172, 188, 255));
+    }
+
+    /// <summary>The settings page: the shared panel in a frame in the middle of the screen</summary>
+    private void DrawSettings(int screenWidth, int screenHeight)
+    {
+        const int width = 560;
+        const int bodyTop = 84;
+
+        int height = Math.Min(bodyTop + Settings.ContentHeight + 14, screenHeight - 60);
+        int x = (screenWidth - width) / 2;
+        int y = (screenHeight - height) / 2;
+
+        DrawFrame(x, y, width, height, "SETTINGS", "Arrows: navigate + adjust | R: reset | ESC: back");
+        Settings.Draw(x, y + bodyTop, width, height - bodyTop - 14);
+    }
+
+    private static void DrawFrame(int x, int y, int width, int height, string title, string hint)
+    {
+        Raylib.DrawRectangle(x, y, width, height, new Color(10, 14, 22, 235));
+        Raylib.DrawRectangleLines(x, y, width, height, new Color(95, 225, 235, 200));
+
+        Raylib.DrawText(title, x + 20, y + 16, 30, new Color(95, 225, 235, 255));
+        Raylib.DrawText(hint, x + 20, y + 52, 14, new Color(180, 190, 200, 255));
     }
 }
