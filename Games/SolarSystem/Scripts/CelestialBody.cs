@@ -1,7 +1,7 @@
 using System.Numerics;
 using VoxelEngine.World;
 
-namespace Terraformer.Games.SolarSystem;
+namespace Games.SolarSystem;
 
 /// <summary>
 /// A celestial body: a <see cref="VoxelBody"/> on a circular orbit. Planets circle the sun at the

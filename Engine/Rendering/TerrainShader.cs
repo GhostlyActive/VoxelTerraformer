@@ -55,6 +55,19 @@ uniform int pointLightCount;
 uniform vec4 pointLights[MAX_POINT_LIGHTS];
 uniform vec4 pointLightColors[MAX_POINT_LIGHTS];
 
+// The mode-switch wave: a glowing ring on the ground at waveRadius around waveCenter, with the
+// terrain outside it muted so the two sides read as old and new. waveStrength 0 turns it off.
+uniform vec3 waveCenter;
+uniform float waveRadius;
+uniform float waveWidth;
+uniform float waveStrength;
+uniform vec3 waveColor;
+
+// A faint grid drawn into the surface near the camera, which is how Sculpt mode shows its
+// 12.5 cm cells on terrain that looks like plain blocks otherwise. gridStrength 0 turns it off.
+uniform float gridSpacing;
+uniform float gridStrength;
+
 out vec4 finalColor;
 
 float sunVisibility(vec3 position)
@@ -112,7 +125,36 @@ void main()
     // The vertex colour's alpha carries emissive (0 = lit normally, 1 = self-lit)
     vec3 color = mix(lit, fragColor.rgb, fragColor.a);
 
-    float fog = smoothstep(fogStart, fogEnd, length(fragPosition - cameraPosition));
+    float eyeDistance = length(fragPosition - cameraPosition);
+
+    if (gridStrength > 0.0)
+    {
+        // One-pixel lines on the cell borders of each face, fading out with distance so the far
+        // terrain stays clean. The axis the face is perpendicular to is masked out: fwidth of a
+        // constant is zero and would put a line everywhere.
+        vec3 p = fragPosition / gridSpacing;
+        vec3 w = max(fwidth(p), 1e-4);
+        vec3 g = abs(fract(p - 0.5) - 0.5) / w + abs(normal) * 10.0;
+        float line = clamp(1.0 - min(min(g.x, g.y), g.z), 0.0, 1.0);
+        float near = 1.0 - smoothstep(6.0, 14.0, eyeDistance);
+        color *= 1.0 - 0.16 * line * near * gridStrength;
+    }
+
+    if (waveStrength > 0.0)
+    {
+        float width = max(waveWidth, 0.01);
+        float d = length(fragPosition.xz - waveCenter.xz);
+
+        float band = 1.0 - smoothstep(0.0, width, abs(d - waveRadius));
+        vec3 toEye = normalize(cameraPosition - fragPosition);
+        float rim = pow(1.0 - max(dot(normal, toEye), 0.0), 2.0);
+        color += waveColor * band * waveStrength * (0.3 + 0.5 * rim);
+
+        float outside = smoothstep(waveRadius, waveRadius + width, d) * waveStrength;
+        color = mix(color, vec3(dot(color, vec3(0.299, 0.587, 0.114))), 0.3 * outside);
+    }
+
+    float fog = smoothstep(fogStart, fogEnd, eyeDistance);
     color = mix(color, fogColor, fog);
 
     finalColor = vec4(color, 1.0);
@@ -131,9 +173,19 @@ void main()
     private readonly int _locPointLightCount;
     private readonly int _locPointLights;
     private readonly int _locPointLightColors;
+    private readonly int _locWaveCenter;
+    private readonly int _locWaveRadius;
+    private readonly int _locWaveWidth;
+    private readonly int _locWaveStrength;
+    private readonly int _locWaveColor;
+    private readonly int _locGridSpacing;
+    private readonly int _locGridStrength;
     private Material _material;
 
     public Material Material => _material;
+
+    /// <summary>The raw shader, for <see cref="MeshDrawer"/></summary>
+    public Shader Shader => _shader;
 
     /// <summary>Has to match MAX_OCCLUDERS in the fragment shader</summary>
     public const int MaxShadowCasters = 8;
@@ -159,9 +211,37 @@ void main()
         _locPointLightCount = Raylib.GetShaderLocation(_shader, "pointLightCount");
         _locPointLights = Raylib.GetShaderLocation(_shader, "pointLights");
         _locPointLightColors = Raylib.GetShaderLocation(_shader, "pointLightColors");
+        _locWaveCenter = Raylib.GetShaderLocation(_shader, "waveCenter");
+        _locWaveRadius = Raylib.GetShaderLocation(_shader, "waveRadius");
+        _locWaveWidth = Raylib.GetShaderLocation(_shader, "waveWidth");
+        _locWaveStrength = Raylib.GetShaderLocation(_shader, "waveStrength");
+        _locWaveColor = Raylib.GetShaderLocation(_shader, "waveColor");
+        _locGridSpacing = Raylib.GetShaderLocation(_shader, "gridSpacing");
+        _locGridStrength = Raylib.GetShaderLocation(_shader, "gridStrength");
 
         _material = Raylib.LoadMaterialDefault();
         _material.Shader = _shader;
+
+        // Both effects start switched off; a shader that is never told about them draws plain terrain
+        SetWave(Vector3.Zero, 1e9f, 1f, 0f, Vector3.One);
+        SetGrid(1f, 0f);
+    }
+
+    /// <summary>The mode-switch ring for the next draws; strength 0 hides it</summary>
+    public void SetWave(Vector3 center, float radius, float width, float strength, Vector3 color)
+    {
+        Raylib.SetShaderValue(_shader, _locWaveCenter, center, ShaderUniformDataType.Vec3);
+        Raylib.SetShaderValue(_shader, _locWaveRadius, radius, ShaderUniformDataType.Float);
+        Raylib.SetShaderValue(_shader, _locWaveWidth, width, ShaderUniformDataType.Float);
+        Raylib.SetShaderValue(_shader, _locWaveStrength, strength, ShaderUniformDataType.Float);
+        Raylib.SetShaderValue(_shader, _locWaveColor, color, ShaderUniformDataType.Vec3);
+    }
+
+    /// <summary>The surface grid near the camera; strength 0 hides it</summary>
+    public void SetGrid(float spacing, float strength)
+    {
+        Raylib.SetShaderValue(_shader, _locGridSpacing, MathF.Max(spacing, 0.01f), ShaderUniformDataType.Float);
+        Raylib.SetShaderValue(_shader, _locGridStrength, strength, ShaderUniformDataType.Float);
     }
 
     /// <summary>Set the lighting for the next draw. sunDirection points from the light into the world.</summary>

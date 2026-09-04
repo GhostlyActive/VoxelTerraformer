@@ -14,11 +14,35 @@ public sealed class FrameStats
     private int _next;
     private int _count;
 
+    private readonly List<float> _lifetime = new();
+
     public void Add(float deltaSeconds)
     {
         _milliseconds[_next] = deltaSeconds * 1000f;
         _next = (_next + 1) % Window;
         _count = Math.Min(Window, _count + 1);
+        _lifetime.Add(deltaSeconds * 1000f);
+    }
+
+    /// <summary>Every frame since the start, for a report that does not stop at the last second</summary>
+    public string LifetimeReport(float targetMs = 16.7f)
+    {
+        if (_lifetime.Count == 0) return "no frames";
+
+        var sorted = _lifetime.ToArray();
+        Array.Sort(sorted);
+
+        float average = 0f;
+        int over = 0;
+        foreach (float ms in sorted)
+        {
+            average += ms;
+            if (ms > targetMs) over++;
+        }
+        average /= sorted.Length;
+
+        float p99 = sorted[Math.Min(sorted.Length - 1, (int)(sorted.Length * 0.99f))];
+        return $"frames={sorted.Length} avg={average:F2}ms p99={p99:F2}ms max={sorted[^1]:F2}ms over{targetMs:0}ms={over}";
     }
 
     public float AverageMs

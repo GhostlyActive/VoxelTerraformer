@@ -15,7 +15,8 @@ public readonly struct Frustum
     /// </summary>
     public const float NearPlane = 0.1f;
 
-    public const float FarPlane = 1500f;
+    /// <summary>Beyond the largest view distance (<see cref="World.VoxelWorld.MaxViewDistance"/> chunks) plus room for the sky</summary>
+    public const float FarPlane = 1900f;
 
     private readonly Plane[] _planes;
 

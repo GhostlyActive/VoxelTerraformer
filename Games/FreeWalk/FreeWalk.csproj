@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Everything this game needs comes from Games/Directory.Build.props -->
+
+</Project>

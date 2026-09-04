@@ -1,7 +1,9 @@
 using Raylib_cs;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using VoxelEngine.Audio;
 using VoxelEngine.Config;
+using VoxelEngine.Core;
 using VoxelEngine.Effects;
 using VoxelEngine.Input;
 using VoxelEngine.Rendering;
@@ -12,8 +14,14 @@ namespace VoxelEngine.Scenes;
 /// <summary>Everything a <see cref="VoxelTerrainScene"/> needs to know before the first chunk exists</summary>
 public sealed record VoxelTerrainOptions
 {
-    /// <summary>Save folder inside the user profile; one slot per game</summary>
+    /// <summary>Save slot of this game, resolved through the context's <see cref="Config.UserDataPaths"/></summary>
     public string SaveSlot { get; init; } = "world";
+
+    /// <summary>Explicit storage instead of the slot; null without a context means the world cannot be saved</summary>
+    public WorldStorage? Storage { get; init; }
+
+    /// <summary>What the player places and sculpts with</summary>
+    public byte BuildMaterial { get; init; } = BlockRegistry.Stone;
 
     public Vector3 Spawn { get; init; } = new(128, 60, 128);
 
@@ -48,6 +56,8 @@ public sealed record VoxelTerrainOptions
 public sealed class VoxelTerrainScene : IDisposable
 {
     private readonly EngineSettings _settings;
+    private readonly FrameProfiler? _profiler;
+    private readonly AudioBank? _audio;
     private readonly TerrainShader _shader;
     private readonly StarField? _stars;
     private readonly CloudLayer? _clouds;
@@ -59,6 +69,7 @@ public sealed class VoxelTerrainScene : IDisposable
 
     private TerrainMode _mode;
     private float _shake;
+    private float _sinceModeSwitch = 99f;
 
     // Local lights live here rather than in the games: an explosion should light its own crater
     // without every game rebuilding that machinery
@@ -79,7 +90,9 @@ public sealed class VoxelTerrainScene : IDisposable
     public ParticleSystem Particles { get; }
     public PlayerController Player { get; }
     public DayNightCycle DayNight { get; }
-    public WorldStorage Storage { get; }
+
+    /// <summary>Null when the scene was created without a save slot; Save and Load then report failure</summary>
+    public WorldStorage? Storage { get; }
 
     public Camera3D Camera { get; private set; }
 
@@ -98,25 +111,65 @@ public sealed class VoxelTerrainScene : IDisposable
     /// <summary>Show chunk bounds and the world grid (F3)</summary>
     public bool ShowDebugGeometry { get; set; }
 
+    /// <summary>The wave of the last mode switch while it runs, or null</summary>
+    public ModeTransition? Transition { get; private set; }
+
+    /// <summary>Seconds since the last mode switch; large while none happened</summary>
+    public float SinceModeSwitch => _sinceModeSwitch;
+
+    /// <summary>Raised when the mode changes, with the old and the new one</summary>
+    public event Action<TerrainMode, TerrainMode>? ModeChanged;
+
     /// <summary>The three voxel modes; switching remeshes the world but never touches its data</summary>
     public TerrainMode Mode
     {
         get => _mode;
         set
         {
+            TerrainMode previous = _mode;
+            bool changed = value != previous;
+
             _mode = value;
             World.Mode = value;
+            World.CancelStroke();
+
+            bool remeshes = (value == TerrainMode.Smooth) != Meshes.SmoothRendering;
             Meshes.SetSmoothRendering(value == TerrainMode.Smooth);
+
+            // A switch on a world that is already standing gets its wave; the one from the
+            // constructor, before anything is meshed, is just the starting mode
+            if (!changed || Meshes.MeshedChunks == 0) return;
+
+            Transition = new ModeTransition(previous, value, Player.Position, remeshes);
+            _sinceModeSwitch = 0f;
+
+            Particles.SpawnRing(Player.Position + Vector3.UnitY * 0.15f, ModeColors.Of(value));
+            _audio?.Play("engine.mode", 0.5f, value switch { TerrainMode.Blocks => 0.75f, TerrainMode.Sculpt => 1.0f, _ => 1.25f });
+
+            ModeChanged?.Invoke(previous, value);
         }
     }
 
-    public VoxelTerrainScene(EngineSettings settings, VoxelTerrainOptions options)
+    public VoxelTerrainScene(GameContext context, VoxelTerrainOptions options)
+        : this(context.Settings, options with { Storage = options.Storage ?? context.OpenStorage(options.SaveSlot) },
+            context.Profiler, context.Audio)
+    {
+    }
+
+    public VoxelTerrainScene(EngineSettings settings, VoxelTerrainOptions options, FrameProfiler? profiler = null, AudioBank? audio = null)
     {
         _settings = settings;
+        _profiler = profiler;
+        _audio = audio;
 
-        Storage = new WorldStorage(options.SaveSlot);
-        World = new VoxelWorld(Storage, options.Generator);
+        Storage = options.Storage;
+        World = new VoxelWorld(Storage, options.Generator, settings.ViewDistanceChunks) { BuildMaterial = options.BuildMaterial };
         Player = new PlayerController(options.Spawn, settings);
+
+        // The mesh manager listens for chunks becoming meshable, so it has to exist before the
+        // first chunk does
+        _shader = new TerrainShader();
+        Meshes = new ChunkMeshManager(World);
 
         // Load the spawn area up front so the player lands on solid ground
         World.EnsureAround(options.Spawn, options.PreloadRadius);
@@ -136,22 +189,31 @@ public sealed class VoxelTerrainScene : IDisposable
         _menuSunAngle = settings.SunAngle;
         _menuTimeFlow = settings.TimeFlow;
 
-        _shader = new TerrainShader();
-        Meshes = new ChunkMeshManager(World);
-
         Particles = new ParticleSystem();
         World.BlockBroken += Particles.SpawnBlockBreak;
         World.BlockPlaced += Particles.SpawnBlockPlace;
 
+        // Digging and building are heard, not only seen: the ear registers a stroke before the
+        // mesh has caught up. Synthesized stand-ins, replaced by files a game ships under these names.
+        if (_audio != null)
+        {
+            _audio.Define("engine.dig", new SfxShape(0.12f, 260f, 90f, 0.8f, 14f));
+            _audio.Define("engine.place", new SfxShape(0.10f, 180f, 420f, 0.3f, 12f));
+            _audio.Define("engine.mode", new SfxShape(0.35f, 320f, 900f, 0.05f, 6f));
+            World.BlockBroken += (_, _) => _audio.Play("engine.dig", 0.35f, 0.9f + Random.Shared.NextSingle() * 0.2f);
+            World.BlockPlaced += (_, _) => _audio.Play("engine.place", 0.3f, 0.95f + Random.Shared.NextSingle() * 0.1f);
+        }
+
         AllowEditing = options.AllowEditing;
         Mode = options.Mode;
-        Meshes.BuildAllNow();
-
-        // Beyond the load radius, or stars would hang in front of the terrain
-        _stars = options.Stars ? new StarField(distance: 1300f) : null;
-        _clouds = options.Clouds ? new CloudLayer() : null;
 
         Camera = Player.CameraOnly();
+        Meshes.DetailRadius = settings.DetailRadiusChunks;
+        Meshes.BuildAllNow(Camera.Position);
+
+        // Just inside the far plane, so the stars hang behind even the largest view distance
+        _stars = options.Stars ? new StarField(distance: Frustum.FarPlane - 100f) : null;
+        _clouds = options.Clouds ? new CloudLayer() : null;
     }
 
     /// <summary>Next voxel mode (Blocks → Sculpt → Smooth → Blocks)</summary>
@@ -186,8 +248,14 @@ public sealed class VoxelTerrainScene : IDisposable
 
         if (AllowPlayerControl) Camera = Player.Update(World, dt); else Camera = Player.CameraOnly();
 
-        // Stream the world around the player (budget: at most 2 new chunks per frame)
-        World.UpdateStreaming(Player.Position, 2);
+        // Stream the world around the player; the chunks themselves are built on worker threads
+        World.SetViewDistance(_settings.ViewDistanceChunks);
+        Meshes.DetailRadius = _settings.DetailRadiusChunks;
+
+        long streamStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        int loadedBefore = World.LoadedChunkCount;
+        World.UpdateStreaming(Player.Position);
+        _profiler?.Add(FrameSlot.Stream, streamStarted, Math.Max(0, World.LoadedChunkCount - loadedBefore));
 
         UpdateDayNight(dt);
 
@@ -202,6 +270,14 @@ public sealed class VoxelTerrainScene : IDisposable
         Vector3 light = DayNight.AmbientColor + DayNight.SunlightColor * 0.8f;
         Particles.LightScale = Math.Clamp((light.X + light.Y + light.Z) / 3f, 0.15f, 1.1f);
         Particles.Update(World, dt);
+
+        _sinceModeSwitch += dt;
+        if (Transition != null)
+        {
+            float truth = Transition.Remeshes ? Meshes.UnconvertedRadius(Transition.Origin) : float.PositiveInfinity;
+            Transition.Advance(dt, truth, FogEnd);
+            if (Transition.Done) Transition = null;
+        }
 
         for (int i = _lights.Count - 1; i >= 0; i--)
         {
@@ -219,7 +295,10 @@ public sealed class VoxelTerrainScene : IDisposable
     /// Upload finished meshes from the worker threads. Has to run while a menu is open too, or
     /// the world stays half-built after a mode switch.
     /// </summary>
-    public void PumpMeshUploads() => Meshes.Update();
+    public void PumpMeshUploads() => Meshes.Update(Camera.Position, _profiler);
+
+    /// <summary>Furthest distance at which terrain is drawn: the fog end, capped just inside the streamed world</summary>
+    public float FogEnd => MathF.Min(_settings.FogEnd, (World.LoadRadius - 1) * Chunk.Size);
 
     /// <summary>Mouse wheel sets the build reach, Ctrl+wheel the radius of the sphere brush</summary>
     private void UpdateToolSize()
@@ -306,12 +385,12 @@ public sealed class VoxelTerrainScene : IDisposable
 
     public bool Save()
     {
-        return World.SaveWorld() && Storage.SaveMeta(Player.Position, DayNight.TimeSeconds);
+        return Storage != null && World.SaveWorld() && Storage.SaveMeta(Player.Position, DayNight.TimeSeconds);
     }
 
     public bool Load()
     {
-        if (!World.LoadWorld()) return false;
+        if (Storage == null || !World.LoadWorld()) return false;
 
         if (Storage.TryLoadMeta(out Vector3 position, out float timeSeconds))
         {
@@ -334,14 +413,21 @@ public sealed class VoxelTerrainScene : IDisposable
 
     public void Draw()
     {
-        _shader.FogStart = _settings.FogStart;
-        _shader.FogEnd = MathF.Max(_settings.FogEnd, _settings.FogStart + 10f);
+        float fogEnd = FogEnd;
+        _shader.FogEnd = MathF.Max(fogEnd, 50f);
+        _shader.FogStart = MathF.Min(_settings.FogStart, _shader.FogEnd - 10f);
         _shader.SetFrame(DayNight, Camera.Position);
         _shader.SetPointLights(NearestLights());
+        _shader.SetGrid(SubVoxels.CellSize, Mode == TerrainMode.Sculpt ? _settings.SculptGridStrength : 0f);
+
+        if (Transition is { } wave)
+            _shader.SetWave(wave.Origin, wave.DisplayRadius, wave.Width, wave.Strength, ModeColors.Tint(wave.To));
+        else
+            _shader.SetWave(Vector3.Zero, 1e9f, 1f, 0f, Vector3.One);
 
         Frustum frustum = Frustum.FromCamera(
             Camera, Raylib.GetScreenWidth() / (float)Raylib.GetScreenHeight());
-        Meshes.Draw(_shader.Material, frustum);
+        Meshes.Draw(_shader.Shader, frustum, Camera.Position, fogEnd + Chunk.Size);
 
         World.DrawHover();
         Particles.Draw();
@@ -354,6 +440,7 @@ public sealed class VoxelTerrainScene : IDisposable
             _clouds.Coverage = _settings.CloudCoverage;
             _clouds.Height = _settings.CloudHeight;
             _clouds.DriftSpeed = _settings.CloudDrift;
+            _clouds.Range = fogEnd + 80f;
             _clouds.Draw(frustum, ElapsedTime, DayNight.Daylight01, Player.Position);
         }
 
@@ -383,6 +470,7 @@ public sealed class VoxelTerrainScene : IDisposable
     public void Dispose()
     {
         Meshes.Dispose();
+        World.Dispose();
         _clouds?.Dispose();
         _shader.Unload();
     }

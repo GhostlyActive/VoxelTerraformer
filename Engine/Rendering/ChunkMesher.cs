@@ -42,12 +42,12 @@ public static class ChunkMesher
                 Corners = new[] { (0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0) } },
     };
 
-    // Two triangles per quad; the diagonal is picked by AO, or anisotropy artefacts show up
-    private static readonly int[] _quadOrder = { 0, 1, 2, 0, 2, 3 };
-    private static readonly int[] _quadOrderFlipped = { 1, 2, 3, 1, 3, 0 };
+    public static ChunkMeshData[] Build(MeshBuilder builder, byte[] padded, Dictionary<int, byte[]> refinements, int worldHeight, int worldX, int worldZ)
+        => Build(builder, MeshGrid.FullDetail(padded, worldHeight), refinements, worldX, worldZ, 0, worldHeight);
 
-    public static ChunkMeshData Build(byte[] padded, Dictionary<int, byte[]> refinements, int worldHeight, int worldX, int worldZ)
-        => Build(padded, refinements, worldHeight, worldX, worldZ, 0, worldHeight);
+    public static ChunkMeshData[] Build(MeshBuilder builder, byte[] padded, Dictionary<int, byte[]> refinements, int worldHeight,
+        int worldX, int worldZ, int yStart, int yEnd)
+        => Build(builder, MeshGrid.FullDetail(padded, worldHeight), refinements, worldX, worldZ, yStart, yEnd);
 
     /// <summary>
     /// Meshes only the blocks in [yStart, yEnd); sections partition a column seamlessly.
@@ -57,42 +57,60 @@ public static class ChunkMesher
     /// becomes a handful of quads instead of a thousand, which is where most of the vertex count of
     /// a blocky world goes.
     /// </summary>
-    public static ChunkMeshData Build(byte[] padded, Dictionary<int, byte[]> refinements, int worldHeight,
+    /// <summary>
+    /// Meshes the rows [yStart, yEnd) of <paramref name="grid"/>. Refinements only exist at full
+    /// detail; a coarse grid passes an empty dictionary. Vertices come out in chunk-local metres.
+    /// </summary>
+    public static ChunkMeshData[] Build(MeshBuilder builder, in MeshGrid grid, Dictionary<int, byte[]> refinements,
         int worldX, int worldZ, int yStart, int yEnd)
+        => Build(builder, in grid, refinements, worldX, worldZ, yStart, yEnd, 0, true);
+
+    /// <summary>
+    /// <paramref name="worldY"/> offsets the colour hash for grids that do not start at the bottom
+    /// of the world (voxel bodies); <paramref name="directionalShade"/> off drops the baked
+    /// "top is bright, bottom is dark", which on a sphere would fight the sunlight.
+    /// </summary>
+    public static ChunkMeshData[] Build(MeshBuilder builder, in MeshGrid grid, Dictionary<int, byte[]> refinements,
+        int worldX, int worldZ, int yStart, int yEnd, int worldY, bool directionalShade)
     {
-        var vertices = new List<float>(8192);
-        var normals = new List<float>(8192);
-        var colors = new List<byte>(16384);
+        builder.Clear();
+
+        if (!MeshSectionScan.CanHaveSurface(in grid, refinements, yStart, yEnd)) return Array.Empty<ChunkMeshData>();
+
+        byte[] padded = grid.Blocks;
 
         // Carved blocks carry their own sub-voxel shape and merge with nothing, so they go first
-        for (int y = yStart; y < yEnd; y++)
-        for (int z = 0; z < Chunk.Size; z++)
-        for (int x = 0; x < Chunk.Size; x++)
-        {
-            int index = Index(x, y, z);
-            int id = padded[index];
+        if (refinements.Count > 0)
+            for (int y = yStart; y < yEnd; y++)
+            for (int z = 0; z < grid.Size; z++)
+            for (int x = 0; x < grid.Size; x++)
+            {
+                int index = grid.Index(x, y, z);
+                int id = padded[index];
 
-            if (!BlockRegistry.IsSolid(id)) continue;
-            if (!refinements.TryGetValue(index, out byte[]? field)) continue;
+                if (!BlockRegistry.IsSolid(id)) continue;
+                if (!refinements.TryGetValue(index, out byte[]? field)) continue;
 
-            EmitRefinedBlock(vertices, normals, colors, padded, refinements, x, y, z, field,
-                TerrainColors.ForBlock(id, worldX + x, y, worldZ + z), EmissiveOf(id));
-        }
+                EmitRefinedBlock(builder, in grid, refinements, x, y, z, field,
+                    TerrainColors.ForBlock(id, worldX + x, worldY + y, worldZ + z), EmissiveOf(id));
+            }
 
-        // The mask holds one slice: the two axes across it are two of {Size, Size, worldHeight}
-        var mask = new Cell[Chunk.Size * Math.Max(Chunk.Size, worldHeight)];
+        // The mask holds one slice: the two axes across it are two of {Size, Size, Height}
+        Cell[] mask = RentMask(grid.Size * Math.Max(grid.Size, grid.Height));
 
         for (int f = 0; f < _faces.Length; f++)
-            GreedyFace(vertices, normals, colors, padded, refinements, mask,
-                in _faces[f], f, worldX, worldZ, yStart, yEnd);
+            GreedyFace(builder, in grid, refinements, mask,
+                in _faces[f], f, worldX, worldY, worldZ, yStart, yEnd, directionalShade);
 
-        return new ChunkMeshData
-        {
-            Vertices = vertices.ToArray(),
-            Normals = normals.ToArray(),
-            Colors = colors.ToArray(),
-            VertexCount = vertices.Count / 3,
-        };
+        return builder.Finish();
+    }
+
+    [ThreadStatic] private static Cell[]? _mask;
+
+    private static Cell[] RentMask(int length)
+    {
+        if (_mask == null || _mask.Length < length) _mask = new Cell[length];
+        return _mask;
     }
 
     /// <summary>
@@ -135,17 +153,20 @@ public static class ChunkMesher
     /// mask and then cut into rectangles.
     /// </summary>
     private static void GreedyFace(
-        List<float> vertices,
-        List<float> normals,
-        List<byte> colors,
-        byte[] padded,
+        MeshBuilder builder,
+        in MeshGrid grid,
         Dictionary<int, byte[]> refinements,
         Cell[] mask,
         in FaceInfo face,
         int faceIndex,
-        int worldX, int worldZ,
-        int yStart, int yEnd)
+        int worldX, int worldY, int worldZ,
+        int yStart, int yEnd,
+        bool directionalShade)
     {
+        byte[] padded = grid.Blocks;
+        int scale = grid.Scale;
+        float shade = directionalShade ? face.Shade : 1f;
+
         int normalAxis = AxisOf(face.Nx, face.Ny);
         int uAxis = AxisOf(face.Ux, face.Uy);
         int vAxis = AxisOf(face.Vx, face.Vy);
@@ -162,9 +183,9 @@ public static class ChunkMesher
             cornerAt[alongU * 2 + alongV] = i;
         }
 
-        (int sliceLow, int sliceHigh) = AxisRange(normalAxis, yStart, yEnd);
-        (int uLow, int uHigh) = AxisRange(uAxis, yStart, yEnd);
-        (int vLow, int vHigh) = AxisRange(vAxis, yStart, yEnd);
+        (int sliceLow, int sliceHigh) = AxisRange(normalAxis, grid.Size, yStart, yEnd);
+        (int uLow, int uHigh) = AxisRange(uAxis, grid.Size, yStart, yEnd);
+        (int vLow, int vHigh) = AxisRange(vAxis, grid.Size, yStart, yEnd);
 
         int uCount = uHigh - uLow;
         int vCount = vHigh - vLow;
@@ -172,10 +193,10 @@ public static class ChunkMesher
         Span<int> block = stackalloc int[3];
         Span<int> ambientOcclusion = stackalloc int[4];
 
-        int normalStride = StrideOf(normalAxis);
-        int uStride = StrideOf(uAxis);
-        int vStride = StrideOf(vAxis);
-        int toNeighbor = face.Nx * StrideOf(0) + face.Ny * StrideOf(1) + face.Nz * StrideOf(2);
+        int normalStride = StrideOf(in grid, normalAxis);
+        int uStride = StrideOf(in grid, uAxis);
+        int vStride = StrideOf(in grid, vAxis);
+        int toNeighbor = face.Nx * StrideOf(in grid, 0) + face.Ny * StrideOf(in grid, 1) + face.Nz * StrideOf(in grid, 2);
 
         // Only a chunk that has been carved has any refinements at all, and the volume is walked
         // once per face direction, so the probe per cell is worth skipping where there is nothing
@@ -183,7 +204,7 @@ public static class ChunkMesher
 
         for (int slice = sliceLow; slice < sliceHigh; slice++)
         {
-            int sliceBase = Index(0, 0, 0) + normalStride * slice;
+            int sliceBase = grid.Index(0, 0, 0) + normalStride * slice;
 
             for (int v = 0; v < vCount; v++)
             {
@@ -209,10 +230,10 @@ public static class ChunkMesher
 
                     int x = block[0], y = block[1], z = block[2];
 
-                    AmbientOcclusion(padded, in face, x, y, z, ambientOcclusion);
+                    AmbientOcclusion(in grid, in face, x, y, z, ambientOcclusion);
 
                     mask[cell] = Cell.From(
-                        TerrainColors.ForBlock(id, worldX + x, y, worldZ + z), EmissiveOf(id), ambientOcclusion);
+                        TerrainColors.ForBlock(id, worldX + x * scale, worldY + y * scale, worldZ + z * scale), EmissiveOf(id), ambientOcclusion);
                 }
             }
 
@@ -251,8 +272,8 @@ public static class ChunkMesher
                 block[uAxis] = uLow + u;
                 block[vAxis] = vLow + v;
 
-                EmitMergedFace(vertices, normals, colors, in face,
-                    block[0], block[1], block[2], uAxis, vAxis, width, height, cell);
+                EmitMergedFace(builder, in face,
+                    block[0], block[1], block[2], uAxis, vAxis, width, height, scale, shade, cell);
 
                 u += width - 1;
             }
@@ -271,18 +292,18 @@ public static class ChunkMesher
     /// How far one step along a world axis moves in the padded array. The index is linear in all
     /// three, which lets a slice be walked with additions instead of a multiply per cell.
     /// </summary>
-    private static int StrideOf(int axis) => axis switch
+    private static int StrideOf(in MeshGrid grid, int axis) => axis switch
     {
         0 => 1,
-        1 => PaddedSize * PaddedSize,
-        _ => PaddedSize,
+        1 => grid.Stride * grid.Stride,
+        _ => grid.Stride,
     };
 
     /// <summary>Which world axis a unit vector of the face basis points along</summary>
     private static int AxisOf(int componentX, int componentY) => componentX != 0 ? 0 : componentY != 0 ? 1 : 2;
 
-    private static (int Low, int High) AxisRange(int axis, int yStart, int yEnd)
-        => axis == 1 ? (yStart, yEnd) : (0, Chunk.Size);
+    private static (int Low, int High) AxisRange(int axis, int size, int yStart, int yEnd)
+        => axis == 1 ? (yStart, yEnd) : (0, size);
 
     private static byte EmissiveOf(int id) => (byte)(Math.Clamp(BlockRegistry.Get(id).Emissive, 0f, 1f) * 255f);
 
@@ -292,27 +313,23 @@ public static class ChunkMesher
     /// the rectangle, and along the normal it stays put.
     /// </summary>
     private static void EmitMergedFace(
-        List<float> vertices,
-        List<float> normals,
-        List<byte> colors,
+        MeshBuilder builder,
         in FaceInfo face,
         int x, int y, int z,
         int uAxis, int vAxis,
         int width, int height,
+        int scale,
+        float shade,
         Cell cell)
     {
-        // Split the quad along its brighter diagonal, or the darkened corner smears across both
-        // triangles and flat ground picks up a visible grain
-        int[] order = cell.Occlusion(0) + cell.Occlusion(2) >= cell.Occlusion(1) + cell.Occlusion(3)
-            ? _quadOrder
-            : _quadOrderFlipped;
+        builder.EnsureRoom(4);
 
         Span<int> corner = stackalloc int[3];
+        Span<int> vertex = stackalloc int[4];
 
-        for (int i = 0; i < order.Length; i++)
+        for (int i = 0; i < 4; i++)
         {
-            int cornerIndex = order[i];
-            (int cx, int cy, int cz) = face.Corners[cornerIndex];
+            (int cx, int cy, int cz) = face.Corners[i];
 
             corner[0] = cx;
             corner[1] = cy;
@@ -321,27 +338,24 @@ public static class ChunkMesher
             corner[uAxis] *= width;
             corner[vAxis] *= height;
 
-            vertices.Add(x + corner[0]);
-            vertices.Add(y + corner[1]);
-            vertices.Add(z + corner[2]);
+            float light = shade * (0.45f + 0.55f * (cell.Occlusion(i) / 3f));
 
-            normals.Add(face.Nx);
-            normals.Add(face.Ny);
-            normals.Add(face.Nz);
-
-            float light = face.Shade * (0.45f + 0.55f * (cell.Occlusion(cornerIndex) / 3f));
-            colors.Add((byte)(cell.R * light));
-            colors.Add((byte)(cell.G * light));
-            colors.Add((byte)(cell.B * light));
-            colors.Add(cell.Emissive);
+            vertex[i] = builder.AddVertex(
+                (x + corner[0]) * scale, (y + corner[1]) * scale, (z + corner[2]) * scale,
+                face.Nx, face.Ny, face.Nz,
+                (byte)(cell.R * light), (byte)(cell.G * light), (byte)(cell.B * light), cell.Emissive);
         }
+
+        // Split the quad along its brighter diagonal, or the darkened corner smears across both
+        // triangles and flat ground picks up a visible grain
+        if (cell.Occlusion(0) + cell.Occlusion(2) >= cell.Occlusion(1) + cell.Occlusion(3))
+            builder.AddQuad(vertex[0], vertex[1], vertex[2], vertex[3]);
+        else
+            builder.AddQuad(vertex[1], vertex[2], vertex[3], vertex[0]);
     }
 
     // A neighbour only hides a face when it is solid AND its facing sub-voxel border layer is solid
     // all the way through (full blocks are implicitly full)
-    private static bool NeighborOccludes(byte[] padded, Dictionary<int, byte[]> refinements, int nx, int ny, int nz, int faceIndex)
-        => NeighborOccludesAt(padded, refinements, Index(nx, ny, nz), faceIndex);
-
     private static bool NeighborOccludesAt(byte[] padded, Dictionary<int, byte[]> refinements, int index, int faceIndex)
     {
         if (!BlockRegistry.IsSolid(padded[index])) return false;
@@ -352,10 +366,8 @@ public static class ChunkMesher
     }
 
     private static void EmitRefinedBlock(
-        List<float> vertices,
-        List<float> normals,
-        List<byte> colors,
-        byte[] padded,
+        MeshBuilder builder,
+        in MeshGrid grid,
         Dictionary<int, byte[]> refinements,
         int x, int y, int z,
         byte[] field,
@@ -386,8 +398,8 @@ public static class ChunkMesher
                 else
                 {
                     // Across the block border: check the facing sub-voxel of the neighbouring block
-                    int index = Index(x + face.Nx, y + face.Ny, z + face.Nz);
-                    if (!BlockRegistry.IsSolid(padded[index]))
+                    int index = grid.Index(x + face.Nx, y + face.Ny, z + face.Nz);
+                    if (!BlockRegistry.IsSolid(grid.Blocks[index]))
                     {
                         occluded = false;
                     }
@@ -407,15 +419,13 @@ public static class ChunkMesher
 
                 if (occluded) continue;
 
-                EmitSubFace(vertices, normals, colors, in face, x, y, z, sx, sy, sz, albedo, emissive);
+                EmitSubFace(builder, in face, x, y, z, sx, sy, sz, albedo, emissive);
             }
         }
     }
 
     private static void EmitSubFace(
-        List<float> vertices,
-        List<float> normals,
-        List<byte> colors,
+        MeshBuilder builder,
         in FaceInfo face,
         int x, int y, int z,
         int sx, int sy, int sz,
@@ -433,31 +443,27 @@ public static class ChunkMesher
         byte g = (byte)(albedo.G * light);
         byte b = (byte)(albedo.B * light);
 
-        for (int i = 0; i < _quadOrder.Length; i++)
+        builder.EnsureRoom(4);
+
+        Span<int> vertex = stackalloc int[4];
+        for (int i = 0; i < 4; i++)
         {
-            (int cx, int cy, int cz) = face.Corners[_quadOrder[i]];
-
-            vertices.Add(originX + cx * cell);
-            vertices.Add(originY + cy * cell);
-            vertices.Add(originZ + cz * cell);
-
-            normals.Add(face.Nx);
-            normals.Add(face.Ny);
-            normals.Add(face.Nz);
-
-            colors.Add(r);
-            colors.Add(g);
-            colors.Add(b);
-            colors.Add(emissive);
+            (int cx, int cy, int cz) = face.Corners[i];
+            vertex[i] = builder.AddVertex(
+                originX + cx * cell, originY + cy * cell, originZ + cz * cell,
+                face.Nx, face.Ny, face.Nz, r, g, b, emissive);
         }
+
+        builder.AddQuad(vertex[0], vertex[1], vertex[2], vertex[3]);
     }
 
     /// <summary>
     /// How much light reaches each of the four corners, 0 (fully tucked in) to 3 (open). Sampled
     /// from the air cell in front of the face, so a corner with neighbours on both sides goes dark.
     /// </summary>
-    private static void AmbientOcclusion(byte[] padded, in FaceInfo face, int x, int y, int z, Span<int> result)
+    private static void AmbientOcclusion(in MeshGrid grid, in FaceInfo face, int x, int y, int z, Span<int> result)
     {
+        byte[] padded = grid.Blocks;
         int airX = x + face.Nx;
         int airY = y + face.Ny;
         int airZ = z + face.Nz;
@@ -470,11 +476,11 @@ public static class ChunkMesher
             int signU = (cx * face.Ux + cy * face.Uy + cz * face.Uz) == 1 ? 1 : -1;
             int signV = (cx * face.Vx + cy * face.Vy + cz * face.Vz) == 1 ? 1 : -1;
 
-            bool side1 = BlockRegistry.IsSolid(padded[Index(
+            bool side1 = BlockRegistry.IsSolid(padded[grid.Index(
                 airX + signU * face.Ux, airY + signU * face.Uy, airZ + signU * face.Uz)]);
-            bool side2 = BlockRegistry.IsSolid(padded[Index(
+            bool side2 = BlockRegistry.IsSolid(padded[grid.Index(
                 airX + signV * face.Vx, airY + signV * face.Vy, airZ + signV * face.Vz)]);
-            bool corner = BlockRegistry.IsSolid(padded[Index(
+            bool corner = BlockRegistry.IsSolid(padded[grid.Index(
                 airX + signU * face.Ux + signV * face.Vx,
                 airY + signU * face.Uy + signV * face.Vy,
                 airZ + signU * face.Uz + signV * face.Vz)]);

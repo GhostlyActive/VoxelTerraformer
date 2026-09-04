@@ -6,8 +6,8 @@ namespace VoxelEngine.World;
 
 /// <summary>
 /// One manual save per slot: the changed chunks as deflate-compressed files plus a meta file
-/// (player position, time of day) in the user profile (AppData or ~/.config). Every game gets its
-/// own slot and therefore never overwrites another one's.
+/// (player position, time of day) in a directory of its own. Every game picks its own slot and
+/// therefore never overwrites another one's; the product decides where the slots live.
 /// </summary>
 public sealed class WorldStorage
 {
@@ -24,11 +24,10 @@ public sealed class WorldStorage
 
     private readonly string _directory;
 
-    public WorldStorage(string slot)
+    /// <param name="directory">Absolute path of the slot, normally from <see cref="Config.UserDataPaths.SaveDirectory"/></param>
+    public WorldStorage(string directory)
     {
-        _directory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "Terraformer", slot);
+        _directory = directory;
     }
 
     private string PathFor(ChunkCoord coord) => Path.Combine(_directory, $"chunk_{coord.X}_{coord.Z}.bin");
@@ -37,6 +36,9 @@ public sealed class WorldStorage
 
     // The meta file is the marker that a save exists
     public bool HasSave => File.Exists(MetaPath);
+
+    /// <summary>Is there a saved file for this chunk? Chunks without one regenerate identically and need no reload.</summary>
+    public bool HasChunkFile(ChunkCoord coord) => File.Exists(PathFor(coord));
 
     /// <summary>Is there a save AND is it in the current format? Otherwise "Load" would quietly hand back a fresh world.</summary>
     public bool HasCompatibleSave => ReadMeta() is { } meta && meta.Version == FormatVersion;

@@ -12,15 +12,15 @@ namespace VoxelEngine.Rendering;
 public sealed class VoxelBodyRenderer : IDisposable
 {
     /// <summary>Sub-chunks remeshed per frame while the game is running</summary>
-    private const int MaxRebuildsPerFrame = 6;
+    private const int MaxRebuildsPerFrame = 24;
 
     private sealed class Entry
     {
-        public required Mesh[] Meshes { get; init; }
-        public required bool[] HasMesh { get; init; }
+        public required GpuMesh[]?[] Parts { get; init; }
     }
 
     private readonly Dictionary<VoxelBody, Entry> _entries = new();
+    private readonly MeshBuilder _builder = new();
     private int _rebuildsThisFrame;
 
     /// <summary>Call at the start of every frame; resets the meshing budget</summary>
@@ -69,15 +69,25 @@ public sealed class VoxelBodyRenderer : IDisposable
 
         for (int i = 0; i < body.ChunkCount; i++)
         {
-            if (body.IsChunkDirty(i) && _rebuildsThisFrame < MaxRebuildsPerFrame)
-            {
-                _rebuildsThisFrame++;
-                Rebuild(body, entry, i);
-                body.MarkChunkClean(i);
-            }
+            if (!body.IsChunkDirty(i) || _rebuildsThisFrame >= MaxRebuildsPerFrame) continue;
 
-            if (entry.HasMesh[i]) Raylib.DrawMesh(entry.Meshes[i], shader.Material, transform);
+            _rebuildsThisFrame++;
+            Rebuild(body, entry, i);
+            body.MarkChunkClean(i);
         }
+
+        MeshDrawer.Begin(shader.Shader);
+
+        for (int i = 0; i < body.ChunkCount; i++)
+        {
+            GpuMesh[]? parts = entry.Parts[i];
+            if (parts == null) continue;
+
+            foreach (GpuMesh part in parts)
+                MeshDrawer.Draw(part, transform);
+        }
+
+        MeshDrawer.End();
     }
 
     /// <summary>Model matrix: grid centre to the origin, scale, rotate, then out to the world position</summary>
@@ -98,48 +108,42 @@ public sealed class VoxelBodyRenderer : IDisposable
     {
         if (_entries.TryGetValue(body, out Entry? entry)) return entry;
 
-        entry = new Entry
-        {
-            Meshes = new Mesh[body.ChunkCount],
-            HasMesh = new bool[body.ChunkCount],
-        };
+        entry = new Entry { Parts = new GpuMesh[]?[body.ChunkCount] };
         _entries[body] = entry;
 
         return entry;
     }
 
-    private static void Rebuild(VoxelBody body, Entry entry, int chunkIndex)
+    private void Rebuild(VoxelBody body, Entry entry, int chunkIndex)
     {
         (int originX, int originY, int originZ) = body.ChunkOrigin(chunkIndex);
-        ChunkMeshData data = VoxelBodyMesher.Build(body, originX, originY, originZ);
+        ChunkMeshData[] data = VoxelBodyMesher.Build(_builder, body, originX, originY, originZ);
 
-        if (entry.HasMesh[chunkIndex])
-        {
-            Raylib.UnloadMesh(entry.Meshes[chunkIndex]);
-            entry.HasMesh[chunkIndex] = false;
-        }
+        Free(entry, chunkIndex);
 
-        if (data.VertexCount == 0) return;
+        if (data.Length == 0) return;
 
-        var mesh = new Mesh(data.VertexCount, data.VertexCount / 3);
-        mesh.AllocVertices();
-        mesh.AllocNormals();
-        mesh.AllocColors();
-        data.Vertices.AsSpan(0, data.VertexCount * 3).CopyTo(mesh.VerticesAs<float>());
-        data.Normals.AsSpan(0, data.VertexCount * 3).CopyTo(mesh.NormalsAs<float>());
-        data.Colors.AsSpan(0, data.VertexCount * 4).CopyTo(mesh.ColorsAs<byte>());
-        Raylib.UploadMesh(ref mesh, false);
+        var parts = new GpuMesh[data.Length];
+        for (int i = 0; i < data.Length; i++)
+            parts[i] = new GpuMesh(data[i].Vertices.AsSpan(0, data[i].VertexCount), data[i].Indices.AsSpan(0, data[i].IndexCount));
 
-        entry.Meshes[chunkIndex] = mesh;
-        entry.HasMesh[chunkIndex] = true;
+        entry.Parts[chunkIndex] = parts;
+    }
+
+    private static void Free(Entry entry, int chunkIndex)
+    {
+        GpuMesh[]? parts = entry.Parts[chunkIndex];
+        if (parts == null) return;
+
+        foreach (GpuMesh part in parts) part.Dispose();
+        entry.Parts[chunkIndex] = null;
     }
 
     public void Dispose()
     {
         foreach (Entry entry in _entries.Values)
-            for (int i = 0; i < entry.Meshes.Length; i++)
-                if (entry.HasMesh[i])
-                    Raylib.UnloadMesh(entry.Meshes[i]);
+            for (int i = 0; i < entry.Parts.Length; i++)
+                Free(entry, i);
 
         _entries.Clear();
     }

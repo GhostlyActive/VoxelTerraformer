@@ -74,6 +74,27 @@ public sealed class ParticleSystem
         }
     }
 
+    /// <summary>A flat ring of sparks racing outwards and fading, weightless: the start of the mode-switch wave</summary>
+    public void SpawnRing(Vector3 center, Color color, int count = 48, float speed = 7f)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            float angle = i / (float)count * MathF.Tau + RandomRange(-0.05f, 0.05f);
+            var direction = new Vector3(MathF.Cos(angle), 0f, MathF.Sin(angle));
+
+            Spawn(new Particle
+            {
+                Position = center + direction * 0.4f,
+                Velocity = direction * speed * RandomRange(0.85f, 1.15f),
+                MaxLife = RandomRange(0.4f, 0.6f),
+                Size = RandomRange(0.08f, 0.14f),
+                Color = color,
+                GravityScale = 0f,
+                Growth = -0.6f,
+            });
+        }
+    }
+
     /// <summary>Rising voxel smoke, for instance behind a rocket engine</summary>
     public void SpawnSmoke(Vector3 origin, Vector3 drift, int count, float scale = 1f)
     {

@@ -8,7 +8,7 @@ using VoxelEngine.Rendering;
 using VoxelEngine.UI;
 using VoxelEngine.World;
 
-namespace Terraformer.Games.SolarSystem;
+namespace Games.SolarSystem;
 
 /// <summary>
 /// A solar system built from voxel spheres, at a scale where a planet fills the view when you get
@@ -16,24 +16,23 @@ namespace Terraformer.Games.SolarSystem;
 /// takes real voxels out, throws lasting rubble into orbit, and eventually opens the crust down to
 /// the core. Two of the planets have a molten core that does not appreciate being shot at.
 /// </summary>
+[GameDefinition("SolarSystem", "Solar System", "Fly out and blast the planets back into voxels")]
 public sealed class SolarSystemGame : Game
 {
-    private const float SunRadius = 1500f;
+    private const float SunRadius = 4200f;
     private const float SunSurfaceGravity = 130f;
 
-    // The system is tens of kilometres across, so the raylib defaults (0.01 / 1000) would clip
-    // away everything but the body directly in front of the ship
     private const double NearClipPlane = 2.0;
     private const double FarClipPlane = 260000.0;
 
     /// <summary>Thickness of the crust in voxels; below it sits the core material</summary>
-    private const int CrustDepth = 6;
+    private const int CrustDepth = 9;
 
     /// <summary>
     /// Planets with a molten core get a thicker shell than a single full charge can punch through,
     /// so reaching the core takes a second shot into the same crater rather than one lucky hit.
     /// </summary>
-    private const int VolatileCrustDepth = 22;
+    private const int VolatileCrustDepth = 40;
 
     /// <summary>The crust caves into the breached core before anything is thrown outwards</summary>
     private const float CollapseSeconds = 0.5f;
@@ -53,10 +52,7 @@ public sealed class SolarSystemGame : Game
         (0.45f, 200f), (0.75f, 90f), (1.05f, 35f),
     };
 
-    /// <summary>
-    /// Materials are registered once per process: <see cref="Game.Load"/> runs again on every
-    /// switch into this game, and each registration burns a block id.
-    /// </summary>
+    /// <summary>The planet materials; registering a name twice hands back the same id, so this is safe per Load as well</summary>
     private static class Materials
     {
         public static readonly byte Iron = BlockRegistry.Register("Iron crust", new Color(150, 122, 104, 255));
@@ -102,10 +98,12 @@ public sealed class SolarSystemGame : Game
         "F: full stop | F3: debug | ESC: menu",
     };
 
+    // The system is tens of kilometres across, so the engine's terrain range (0.1 / 1900) would
+    // clip away everything but the body directly in front of the ship
+    public override (double Near, double Far) ClipPlanes => (NearClipPlane, FarClipPlane);
+
     public override void Load()
     {
-        Rlgl.SetClipPlanes(NearClipPlane, FarClipPlane);
-
         _shader = new TerrainShader
         {
             // Fog makes no sense in vacuum, so its range sits far behind every orbit
@@ -135,54 +133,59 @@ public sealed class SolarSystemGame : Game
         StartNearFirstPlanet();
     }
 
+    /// <summary>
+    /// Planets of two to four kilometres across, built from grids of up to 256 voxels a side so
+    /// they keep their detail when a crater the size of a town opens in them. Everything scales
+    /// with them: the sun, the orbits, and the moons that circle at several planet radii.
+    /// </summary>
     private void BuildSystem()
     {
-        CelestialBody ferra = Planet("Ferra", orbit: 7000f, grid: 64, radius: 29f, scale: 18f,
-            speed: 0.055f, tilt: 0.04f, spin: 0.05f, gravity: 70f,
+        CelestialBody ferra = Planet("Ferra", orbit: 10000f, grid: 160, radius: 74f, scale: 12f,
+            speed: 0.045f, tilt: 0.04f, spin: 0.05f, gravity: 70f,
             crust: Materials.Iron, core: Materials.IronCore, seed: 11);
 
-        CelestialBody verdis = Planet("Verdis", orbit: 11500f, grid: 96, radius: 44f, scale: 16f,
-            speed: 0.038f, tilt: -0.08f, spin: 0.04f, gravity: 90f,
+        CelestialBody verdis = Planet("Verdis", orbit: 16000f, grid: 224, radius: 104f, scale: 14f,
+            speed: 0.030f, tilt: -0.08f, spin: 0.04f, gravity: 90f,
             crust: Materials.Grass, core: Materials.Soil, seed: 27);
 
-        CelestialBody cryon = Planet("Cryon", orbit: 16500f, grid: 96, radius: 44f, scale: 14f,
-            speed: 0.027f, tilt: 0.19f, spin: 0.03f, gravity: 80f,
+        CelestialBody cryon = Planet("Cryon", orbit: 23000f, grid: 224, radius: 104f, scale: 12f,
+            speed: 0.022f, tilt: 0.19f, spin: 0.03f, gravity: 80f,
             crust: Materials.Ice, core: Materials.IceCore, seed: 44);
 
-        CelestialBody tharos = Planet("Tharos", orbit: 23000f, grid: 96, radius: 44f, scale: 22f,
-            speed: 0.019f, tilt: -0.13f, spin: 0.025f, gravity: 110f,
+        CelestialBody tharos = Planet("Tharos", orbit: 32000f, grid: 256, radius: 120f, scale: 16f,
+            speed: 0.015f, tilt: -0.13f, spin: 0.025f, gravity: 110f,
             crust: Materials.Basalt, core: Materials.Magma, seed: 63, volatileCore: true);
 
-        CelestialBody ashkar = Planet("Ashkar", orbit: 31000f, grid: 64, radius: 29f, scale: 20f,
-            speed: 0.014f, tilt: 0.27f, spin: 0.06f, gravity: 75f,
+        CelestialBody ashkar = Planet("Ashkar", orbit: 42000f, grid: 192, radius: 88f, scale: 14f,
+            speed: 0.011f, tilt: 0.27f, spin: 0.06f, gravity: 75f,
             crust: Materials.Ash, core: Materials.Magma, seed: 81, volatileCore: true);
 
-        CelestialBody nyx = Planet("Nyx", orbit: 40000f, grid: 96, radius: 44f, scale: 18f,
-            speed: 0.010f, tilt: -0.22f, spin: 0.02f, gravity: 95f,
+        CelestialBody nyx = Planet("Nyx", orbit: 54000f, grid: 256, radius: 120f, scale: 14f,
+            speed: 0.008f, tilt: -0.22f, spin: 0.02f, gravity: 95f,
             crust: Materials.Sand, core: Materials.Sandstone, seed: 97);
 
-        Moon("Kell", verdis, orbit: 2100f, grid: 32, radius: 14f, scale: 11f, speed: 0.20f, tilt: 0.32f,
+        Moon("Kell", verdis, orbit: 4600f, grid: 64, radius: 28f, scale: 9f, speed: 0.20f, tilt: 0.32f,
             material: Materials.MoonRock, seed: 71);
-        Moon("Dun", verdis, orbit: 3400f, grid: 32, radius: 12f, scale: 8f, speed: 0.13f, tilt: -0.44f,
+        Moon("Dun", verdis, orbit: 7400f, grid: 64, radius: 24f, scale: 7f, speed: 0.13f, tilt: -0.44f,
             material: Materials.RustMoon, seed: 74);
 
-        Moon("Sill", cryon, orbit: 2600f, grid: 32, radius: 14f, scale: 10f, speed: 0.16f, tilt: 0.51f,
+        Moon("Sill", cryon, orbit: 5200f, grid: 64, radius: 28f, scale: 8f, speed: 0.16f, tilt: 0.51f,
             material: Materials.IceMoon, seed: 78);
 
-        Moon("Orin", tharos, orbit: 3000f, grid: 64, radius: 27f, scale: 9f, speed: 0.14f, tilt: -0.36f,
+        Moon("Orin", tharos, orbit: 6800f, grid: 96, radius: 44f, scale: 8f, speed: 0.14f, tilt: -0.36f,
             material: Materials.MoonRock, seed: 88);
-        Moon("Vex", tharos, orbit: 4600f, grid: 32, radius: 13f, scale: 9f, speed: 0.09f, tilt: 0.58f,
+        Moon("Vex", tharos, orbit: 10500f, grid: 64, radius: 26f, scale: 8f, speed: 0.09f, tilt: 0.58f,
             material: Materials.RustMoon, seed: 95);
 
-        Moon("Ember", ashkar, orbit: 2200f, grid: 32, radius: 13f, scale: 8f, speed: 0.19f, tilt: -0.6f,
+        Moon("Ember", ashkar, orbit: 4800f, grid: 64, radius: 26f, scale: 7f, speed: 0.19f, tilt: -0.6f,
             material: Materials.MoonRock, seed: 102);
 
-        Moon("Thale", nyx, orbit: 2800f, grid: 32, radius: 14f, scale: 12f, speed: 0.12f, tilt: 0.24f,
+        Moon("Thale", nyx, orbit: 6200f, grid: 64, radius: 28f, scale: 10f, speed: 0.12f, tilt: 0.24f,
             material: Materials.IceMoon, seed: 109);
-        Moon("Bram", nyx, orbit: 4200f, grid: 32, radius: 11f, scale: 9f, speed: 0.08f, tilt: -0.47f,
+        Moon("Bram", nyx, orbit: 9600f, grid: 64, radius: 22f, scale: 8f, speed: 0.08f, tilt: -0.47f,
             material: Materials.MoonRock, seed: 115);
 
-        Moon("Halo", ferra, orbit: 1600f, grid: 32, radius: 11f, scale: 7f, speed: 0.24f, tilt: 0.4f,
+        Moon("Halo", ferra, orbit: 3600f, grid: 64, radius: 22f, scale: 6f, speed: 0.24f, tilt: 0.4f,
             material: Materials.IceMoon, seed: 121);
     }
 
@@ -234,19 +237,22 @@ public sealed class SolarSystemGame : Game
         _bodies.Add(celestial);
     }
 
-    /// <summary>Start next to a planet rather than in empty space, so the scale reads immediately</summary>
+    /// <summary>
+    /// Start close over the second planet rather than in empty space: at a little over two radii
+    /// it fills the view, and the sun and the inner planet hang behind it for scale.
+    /// </summary>
     private void StartNearFirstPlanet()
     {
-        CelestialBody first = _bodies[0];
+        CelestialBody first = _bodies[1];
         float radius = first.Body.SurfaceRadius;
 
         _ship = new FreeFlyController(
-            first.Body.Position + new Vector3(radius * 1.4f, radius * 0.9f, radius * 3.6f),
+            first.Body.Position + new Vector3(radius * 1.1f, radius * 0.6f, radius * 1.9f),
             Context.Settings)
         {
-            Thrust = 260f,
-            BoostMultiplier = 5f,
-            MaxSpeed = 1400f,
+            Thrust = 420f,
+            BoostMultiplier = 6f,
+            MaxSpeed = 2200f,
 
             // A vacuum does not slow you down, and an orbit only survives without damping
             Damping = 0f,
@@ -826,7 +832,5 @@ public sealed class SolarSystemGame : Game
     {
         _renderer.Dispose();
         _shader.Unload();
-
-        Rlgl.SetClipPlanes(Frustum.NearPlane, Frustum.FarPlane); // back to the engine range for the next game
     }
 }

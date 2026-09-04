@@ -1,7 +1,8 @@
 using Raylib_cs;
 using System.Numerics;
+using VoxelEngine.Effects;
 
-namespace VoxelEngine.Effects;
+namespace Games.RocketStorm;
 
 /// <summary>
 /// A projectile on a scripted path (quadratic Bézier): launch, apex and impact are fixed the

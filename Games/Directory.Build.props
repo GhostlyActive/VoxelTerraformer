@@ -1,0 +1,25 @@
+<Project>
+
+  <!-- Every folder under Games/ is one game: a class library that references only the engine.
+       The launcher picks the projects up by their folder, so adding a game means adding a folder
+       with an empty csproj (`<Project Sdk="Microsoft.NET.Sdk"></Project>`) and a Game class
+       carrying [GameDefinition]. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Games.$(MSBuildProjectName)</AssemblyName>
+    <RootNamespace>Games.$(MSBuildProjectName)</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)../Engine/Engine.csproj" />
+  </ItemGroup>
+
+  <!-- Assets end up under Games/<Id>/Assets next to the launcher, which is where GameContext.AssetPath looks -->
+  <ItemGroup>
+    <Content Include="Assets/**" Link="Games/$(MSBuildProjectName)/Assets/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

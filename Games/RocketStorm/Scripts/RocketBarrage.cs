@@ -1,10 +1,9 @@
 using Raylib_cs;
 using System.Numerics;
 using VoxelEngine.Audio;
-using VoxelEngine.Effects;
 using VoxelEngine.Scenes;
 
-namespace Terraformer.Games.RocketStorm;
+namespace Games.RocketStorm;
 
 /// <summary>
 /// The attack: waves of rockets that arc in on the player from the horizon. Each one announces

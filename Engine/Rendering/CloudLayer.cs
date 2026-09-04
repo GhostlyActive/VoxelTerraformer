@@ -23,7 +23,6 @@ public sealed class CloudLayer : IDisposable
     private const int BlobX = 6;             // cubes per axis in a lump
     private const int BlobY = 3;
     private const int BlobZ = 6;
-    private const float Range = 780f;        // out past the fog, and it travels with the player
 
     /// <summary>Distinct lump shapes to pick from</summary>
     private const int ShapeCount = 24;
@@ -31,6 +30,9 @@ public sealed class CloudLayer : IDisposable
     public float Coverage { get; set; } = 0.35f;
     public float Height { get; set; } = 80f;
     public float DriftSpeed { get; set; } = 1.2f;   // blocks per second
+
+    /// <summary>How far out clouds exist; set past the fog end, or the sky ends in a visible line</summary>
+    public float Range { get; set; } = 1000f;
 
     private Mesh[]? _shapes;
     private Material _material;

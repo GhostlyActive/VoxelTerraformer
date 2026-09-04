@@ -1,28 +1,33 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- The launcher: the window, the engine and every game under Games/. It has no game code of
+       its own; the games are separate projects it references, and Program.cs discovers them
+       through the attributes the build stamps below. -->
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>Terraformer</RootNamespace>
+
+    <!-- Only Program.cs belongs to the launcher; Engine/, Games/ and Tests/ are projects of their own -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
 
-  <!-- Engine and Tests are projects of their own in subfolders and must not be compiled in here -->
   <ItemGroup>
-    <Compile Remove="Engine/**;Tests/**" />
-    <None Remove="Engine/**;Tests/**" />
-    <EmbeddedResource Remove="Engine/**;Tests/**" />
-  </ItemGroup>
-
-  <ItemGroup>
+    <Compile Include="Program.cs" />
     <ProjectReference Include="Engine/Engine.csproj" />
   </ItemGroup>
 
-  <!-- Assets end up under Games/<Id>/Assets in the output folder, which is where GameContext.AssetPath looks -->
+  <!-- One [assembly: GameAssembly("Games.X")] per game project, so GameRegistry.AddFromLauncher
+       can load them by name (also from a single-file publish, where a directory scan finds nothing) -->
   <ItemGroup>
-    <Content Include="Games/**/Assets/**" CopyToOutputDirectory="PreserveNewest" />
+    <GameProject Include="Games/*/*.csproj">
+      <_Parameter1>Games.%(Filename)</_Parameter1>
+    </GameProject>
+    <ProjectReference Include="@(GameProject)" />
+    <AssemblyAttribute Include="@(GameProject->'VoxelEngine.Core.GameAssemblyAttribute')" />
   </ItemGroup>
 
 </Project>

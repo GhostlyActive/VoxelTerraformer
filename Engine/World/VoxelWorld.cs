@@ -6,21 +6,30 @@ using VoxelEngine.Rendering;
 
 namespace VoxelEngine.World;
 
-public class VoxelWorld
+public class VoxelWorld : IDisposable
 {
     public const int WorldHeight = 64;
 
-    // Streaming: chunks are loaded in a circle around the player and unloaded with hysteresis.
-    // LoadRadius * chunk size = 768 blocks, which only pays off because distant chunks are meshed
-    // with merged blocks (see ChunkMeshManager); at full detail this radius would not hold 60 fps.
-    public const int LoadRadius = 24;
-    public const int UnloadRadius = 26;
+    /// <summary>Chunks the streaming can be asked to keep loaded around the player, at most</summary>
+    public const int MaxViewDistance = 48;
 
-    private static readonly (int X, int Z)[] _loadOrder = BuildLoadOrder();
+    // Streaming: chunks are requested in a circle around the player, built on worker threads
+    // and adopted a few per frame; they are dropped with hysteresis two chunks further out
+    private int _loadRadius;
+    private (int X, int Z)[] _loadOrder = Array.Empty<(int, int)>();
 
     private readonly Dictionary<ChunkCoord, Chunk> _chunks = new();
-    private readonly WorldStorage _storage;
+    private readonly WorldStorage? _storage;
     private readonly ITerrainGenerator _generator;
+    private readonly ChunkLoader _loader;
+    private readonly HashSet<ChunkCoord> _pendingLoads = new();
+
+    // Bumped by "Load world"; results built for an older world are dropped when they arrive
+    private int _worldGeneration;
+
+    private const int AdoptBudgetPerFrame = 8;
+    private const int UnloadBudgetPerFrame = 24;
+    private const int MaxPendingLoads = 12;
 
     // Changed chunks survive unloading in memory; only what the player explicitly saves goes to
     // disk. On startup the world is always fresh.
@@ -40,54 +49,50 @@ public class VoxelWorld
 
     // Sculpt mode: a sphere brush on the sub-voxel density field; holding it draws a continuous stroke
     private bool _hasSculptTarget;
-    private Vector3 _sculptTarget;
     private float _sculptRadiusForDraw;
-
-    // The target moves between frames; without stamping along that stretch, a fast mouse movement
-    // would leave a string of beads instead of a tube
-    private bool _stroking;
-    private Vector3 _strokePrevious;
-    private bool _strokeAdding;
-    private float _strokeParticleCooldown;
     private EngineSettings _settings = new();
 
-    // While adding material the brush follows the crosshair at a limited pace. Otherwise the
-    // surface races towards the view the moment the ray lands on freshly built material.
-    private bool _hasBuildFront;
-    private Vector3 _buildFront;
-    private bool _rayHadHit;
-    private float _rayLastDistance;
+    // A stroke is anchored to the surface it started on: while the button is held the brush
+    // follows the crosshair across the plane through that point, not across whatever the ray hits
+    // now. Otherwise adding material would hit the material just added and race towards the
+    // camera, and carving through a wall would jump to whatever lies behind it.
+    private bool _stroking;
+    private bool _strokeAdding;
+    private bool _brushActive;
+    private Vector3 _anchorPoint;
+    private Vector3 _anchorNormal;
+    private Vector3 _strokePrevious;
+    private float _strokeFeedbackCooldown;
 
-    // Where the brush actually bites. While adding, that trails the crosshair, and drawing the
-    // preview at the crosshair instead would show the sphere somewhere the material never appears.
+    // Where the brush bites this frame, for the preview and the feedback
     private Vector3 _previewCenter;
 
-    // The brush sphere and the block outline get in the way while building, so they only appear
-    // briefly after a size change (wheel) and permanently while the debug overlay is on
+    // The brush sphere and the block outline get in the way while building, so they show briefly
+    // after a size change (wheel), at low strength all the time when ShowBrushAlways is set, and
+    // at full strength while the debug overlay is on
     private float _previewTimer;
 
     private const float StrokeStepFactor = 0.5f;    // stamp spacing as a fraction of the radius
     private const int StrokeMaxStamps = 64;         // work budget for one frame of a fast stroke
-
-    // A stroke is only broken when the target changes *depth*, which means the ray slid off an
-    // edge onto something far away. Sideways speed, however high, is a hand movement and has to
-    // draw a continuous line.
-    private const float DepthJumpMeters = 1.5f;
-    private const float DepthJumpFraction = 0.35f;
-    private const float BuildMaxLag = 1.5f;         // how far the build front may lag, in radii
-    private const float SculptParticleInterval = 0.07f;
+    private const float StrokeMinMove = 0.05f;      // radii the target has to move before it is stamped again
+    private const float ReanchorSlack = 1.0f;       // radii the true surface may leave the plane before the stroke follows it
+    private const float FeedbackInterval = 0.07f;   // seconds between particle bursts and sounds along a stroke
 
     /// <summary>Switched with key V; see <see cref="TerrainMode"/></summary>
     public TerrainMode Mode { get; set; } = TerrainMode.Blocks;
+
+    /// <summary>What the player places and sculpts with; a game sets its own material here</summary>
+    public byte BuildMaterial { get; set; } = BlockRegistry.Stone;
 
     /// <summary>Both fine modes use the same sphere brush; only the presentation differs</summary>
     public bool UsesSculptTool => Mode != TerrainMode.Blocks;
 
     /// <summary>
-    /// Chunk needs a new mesh between the two block heights, inclusive. Also fires for neighbours
-    /// when an edit touches an edge, because face culling and ambient occlusion cross chunk borders.
+    /// Chunk needs a new mesh between the two block heights, inclusive, and why. Also fires for
+    /// neighbours when an edit touches an edge, because face culling and ambient occlusion cross
+    /// chunk borders.
     /// </summary>
-    public event Action<ChunkCoord, int, int>? ChunkDirty;
+    public event Action<ChunkCoord, int, int, MeshReason>? ChunkDirty;
 
     /// <summary>Block removed: centre plus albedo, for particles among others</summary>
     public event Action<Vector3, Color>? BlockBroken;
@@ -102,63 +107,173 @@ public class VoxelWorld
 
     public int LoadedChunkCount => _chunks.Count;
 
-    public VoxelWorld(WorldStorage storage, ITerrainGenerator? generator = null)
+    /// <summary>Chunks requested from the workers and not yet adopted</summary>
+    public int PendingLoads => _pendingLoads.Count;
+
+    /// <summary>Radius in chunks that streaming keeps loaded around the player</summary>
+    public int LoadRadius => _loadRadius;
+
+    public int UnloadRadius => _loadRadius + 2;
+
+    /// <param name="storage">Where saves go; null for a world that cannot be saved or loaded</param>
+    public VoxelWorld(WorldStorage? storage, ITerrainGenerator? generator = null, int viewDistanceChunks = 24)
     {
         _storage = storage;
         _generator = generator ?? new DefaultTerrainGenerator();
+
+        // Generation is cheap next to meshing, so two threads keep up with any walking speed
+        _loader = new ChunkLoader(_storage, _generator, WorldHeight, Math.Clamp(Environment.ProcessorCount / 4, 1, 3));
+
+        SetViewDistance(viewDistanceChunks);
+    }
+
+    /// <summary>Change how far the world streams; takes effect over the next frames</summary>
+    public void SetViewDistance(int chunks)
+    {
+        chunks = Math.Clamp(chunks, 2, MaxViewDistance);
+        if (chunks == _loadRadius) return;
+
+        _loadRadius = chunks;
+        _loadOrder = BuildLoadOrder(chunks);
     }
 
     public bool TryGetChunk(ChunkCoord coord, out Chunk chunk)
         => _chunks.TryGetValue(coord, out chunk!);
 
+    /// <summary>Loaded with all eight neighbours present, so a mesh built now stays valid</summary>
+    public bool IsMeshable(ChunkCoord coord)
+        => _chunks.TryGetValue(coord, out Chunk? chunk) && chunk.Surrounded;
+
+    /// <summary>The 3x3 neighbourhood as [dx + 1 + 3 * (dz + 1)]; missing chunks are null</summary>
+    public void GetNeighbourhood(ChunkCoord coord, Chunk?[] buffer)
+    {
+        for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++)
+            buffer[dx + 1 + 3 * (dz + 1)] = _chunks.TryGetValue(new ChunkCoord(coord.X + dx, coord.Z + dz), out Chunk? chunk) ? chunk : null;
+    }
+
     // --- Streaming ---
 
-    /// <summary>Loads everything within the radius right away (blocking), for the spawn area at startup</summary>
+    /// <summary>
+    /// Loads everything within the radius right away (blocking), for the spawn area at startup.
+    /// The chunks are built in parallel and adopted in one go.
+    /// </summary>
     public void EnsureAround(Vector3 position, int radiusChunks)
     {
         (int pcx, int pcz) = PositionToChunk(position);
 
+        var missing = new List<ChunkCoord>();
         for (int dz = -radiusChunks; dz <= radiusChunks; dz++)
         for (int dx = -radiusChunks; dx <= radiusChunks; dx++)
         {
             var coord = new ChunkCoord(pcx + dx, pcz + dz);
-            if (!_chunks.ContainsKey(coord)) LoadChunk(coord);
+            if (_chunks.ContainsKey(coord)) continue;
+
+            if (_keptModified.Remove(coord, out Chunk? kept))
+            {
+                AddChunk(coord, kept);
+                continue;
+            }
+
+            missing.Add(coord);
         }
+
+        var built = new Chunk[missing.Count];
+        bool fromDisk = _diskIsBase;
+        Parallel.For(0, missing.Count, i => built[i] = Build(missing[i], fromDisk));
+
+        for (int i = 0; i < missing.Count; i++)
+            AddChunk(missing[i], built[i]);
     }
 
-    /// <summary>Call once per frame: loads the next missing chunks within budget and drops distant ones</summary>
-    public void UpdateStreaming(Vector3 playerPosition, int loadBudget)
+    private Chunk Build(ChunkCoord coord, bool fromDisk)
+    {
+        if (fromDisk && _storage != null && _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks, out Dictionary<int, byte[]>? refinements))
+            return new Chunk(coord, blocks!, refinements!);
+
+        return new Chunk(coord, WorldHeight, _generator);
+    }
+
+    /// <summary>
+    /// Call once per frame: adopts chunks the workers finished, drops distant ones and asks for
+    /// the next missing ones nearest first. Everything here is bounded per frame.
+    /// </summary>
+    public void UpdateStreaming(Vector3 playerPosition)
     {
         (int pcx, int pcz) = PositionToChunk(playerPosition);
 
+        AdoptBuiltChunks(pcx, pcz);
+        UnloadDistant(pcx, pcz);
+        RequestMissing(pcx, pcz);
+    }
+
+    private void AdoptBuiltChunks(int pcx, int pcz)
+    {
+        int adopted = 0;
+
+        while (adopted < AdoptBudgetPerFrame && _loader.TryTake(out ChunkLoader.Result result))
+        {
+            _pendingLoads.Remove(result.Coord);
+
+            if (result.WorldGeneration != _worldGeneration) continue; // from before "Load world"
+            if (_chunks.ContainsKey(result.Coord)) continue;           // preloaded meanwhile
+            if (!Within(result.Coord, pcx, pcz, UnloadRadius)) continue; // the player walked away
+
+            AddChunk(result.Coord, result.Chunk);
+            adopted++;
+        }
+    }
+
+    private void UnloadDistant(int pcx, int pcz)
+    {
         List<ChunkCoord>? toUnload = null;
         foreach (ChunkCoord coord in _chunks.Keys)
         {
-            int dx = coord.X - pcx;
-            int dz = coord.Z - pcz;
-            if (dx * dx + dz * dz <= UnloadRadius * UnloadRadius) continue;
+            if (Within(coord, pcx, pcz, UnloadRadius)) continue;
+
             (toUnload ??= new List<ChunkCoord>()).Add(coord);
+            if (toUnload.Count >= UnloadBudgetPerFrame) break;
         }
 
-        if (toUnload != null)
-            foreach (ChunkCoord coord in toUnload)
-                UnloadChunk(coord);
+        if (toUnload == null) return;
 
+        foreach (ChunkCoord coord in toUnload)
+            UnloadChunk(coord);
+    }
+
+    private void RequestMissing(int pcx, int pcz)
+    {
         foreach ((int offsetX, int offsetZ) in _loadOrder)
         {
-            if (loadBudget <= 0) break;
+            if (_pendingLoads.Count >= MaxPendingLoads) break;
 
             var coord = new ChunkCoord(pcx + offsetX, pcz + offsetZ);
-            if (_chunks.ContainsKey(coord)) continue;
+            if (_chunks.ContainsKey(coord) || _pendingLoads.Contains(coord)) continue;
 
-            LoadChunk(coord);
-            loadBudget--;
+            // A chunk with unsaved edits never goes back through the generator
+            if (_keptModified.Remove(coord, out Chunk? kept))
+            {
+                AddChunk(coord, kept);
+                continue;
+            }
+
+            _pendingLoads.Add(coord);
+            _loader.Request(coord, _diskIsBase, _worldGeneration);
         }
+    }
+
+    private static bool Within(ChunkCoord coord, int pcx, int pcz, int radius)
+    {
+        int dx = coord.X - pcx;
+        int dz = coord.Z - pcz;
+        return dx * dx + dz * dz <= radius * radius;
     }
 
     /// <summary>Manual save: the entire current state of the world becomes the save</summary>
     public bool SaveWorld()
     {
+        if (_storage == null) return false;
+
         // Fresh session: the old save is replaced, not mixed into
         if (!_diskIsBase) _storage.DeleteAll();
 
@@ -184,73 +299,110 @@ public class VoxelWorld
         return true;
     }
 
-    /// <summary>Manual load: discards the current state and restores the save</summary>
+    /// <summary>
+    /// Manual load: discards the current state and restores the save. Only chunks that were
+    /// edited or have a file on disk are replaced; generated terrain regenerates identically, so
+    /// throwing it away would only cost a reload of the whole view.
+    /// </summary>
     public bool LoadWorld()
     {
         // Reject old or foreign format versions, or a fresh world would quietly be loaded instead
-        if (!_storage.HasCompatibleSave) return false;
+        if (_storage == null || !_storage.HasCompatibleSave) return false;
 
         _keptModified.Clear();
         _diskIsBase = true;
+        _worldGeneration++;
 
-        // Drop everything loaded; afterwards it comes fresh from disk or from the generator
         foreach (ChunkCoord coord in _chunks.Keys.ToList())
         {
+            Chunk chunk = _chunks[coord];
+            if (!chunk.Modified && !_storage.HasChunkFile(coord)) continue;
+
             _chunks.Remove(coord);
+            chunk.Surrounded = false;
+            chunk.MeshRequested = false;
+            MarkNeighboursUnsurrounded(coord);
             ChunkUnloaded?.Invoke(coord);
         }
 
         return true;
     }
 
-    private void LoadChunk(ChunkCoord coord)
+    private void AddChunk(ChunkCoord coord, Chunk chunk)
     {
-        Chunk chunk;
-        if (_keptModified.Remove(coord, out Chunk? kept))
-        {
-            chunk = kept;
-        }
-        else if (_diskIsBase && _storage.TryLoad(coord, Chunk.Size * WorldHeight * Chunk.Size, out byte[]? blocks, out Dictionary<int, byte[]>? refinements))
-        {
-            chunk = new Chunk(coord, blocks!, refinements!);
-        }
-        else
-        {
-            chunk = new Chunk(coord, WorldHeight, _generator);
-        }
-
         _chunks.Add(coord, chunk);
 
-        // Remesh this chunk and all 8 neighbours: faces towards previously "empty" neighbouring
-        // space disappear, and ambient occlusion at the borders is only right with neighbour data
+        // The new chunk may complete the neighbourhood of any of the nine chunks around it.
+        // Each one is meshed exactly once, the moment that happens; edits keep it current after.
         for (int dz = -1; dz <= 1; dz++)
         for (int dx = -1; dx <= 1; dx++)
-            ChunkDirty?.Invoke(new ChunkCoord(coord.X + dx, coord.Z + dz), 0, WorldHeight - 1);
+        {
+            var candidate = new ChunkCoord(coord.X + dx, coord.Z + dz);
+            if (!_chunks.TryGetValue(candidate, out Chunk? other) || other.Surrounded) continue;
+            if (!HasAllNeighbours(candidate)) continue;
+
+            other.Surrounded = true;
+            if (other.MeshRequested) continue;
+
+            other.MeshRequested = true;
+            ChunkDirty?.Invoke(candidate, 0, WorldHeight - 1, MeshReason.Stream);
+        }
+    }
+
+    private bool HasAllNeighbours(ChunkCoord coord)
+    {
+        for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            if (dx == 0 && dz == 0) continue;
+            if (!_chunks.ContainsKey(new ChunkCoord(coord.X + dx, coord.Z + dz))) return false;
+        }
+
+        return true;
     }
 
     private void UnloadChunk(ChunkCoord coord)
     {
         if (!_chunks.Remove(coord, out Chunk? chunk)) return;
 
+        chunk.Surrounded = false;
+        chunk.MeshRequested = false;
+        MarkNeighboursUnsurrounded(coord);
+
         if (chunk.Modified) _keptModified[coord] = chunk;
         ChunkUnloaded?.Invoke(coord);
+    }
+
+    // A neighbour that loses a chunk keeps its mesh (the stale shell sits at the far ring, out
+    // of sight) but must not be re-meshed until the gap is filled again
+    private void MarkNeighboursUnsurrounded(ChunkCoord coord)
+    {
+        for (int dz = -1; dz <= 1; dz++)
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            if (dx == 0 && dz == 0) continue;
+            if (_chunks.TryGetValue(new ChunkCoord(coord.X + dx, coord.Z + dz), out Chunk? other))
+                other.Surrounded = false;
+        }
     }
 
     private static (int cx, int cz) PositionToChunk(Vector3 position)
         => (FloorDiv((int)MathF.Floor(position.X), Chunk.Size),
             FloorDiv((int)MathF.Floor(position.Z), Chunk.Size));
 
-    private static (int X, int Z)[] BuildLoadOrder()
+    private static (int X, int Z)[] BuildLoadOrder(int radius)
     {
         var offsets = new List<(int X, int Z)>();
-        for (int dz = -LoadRadius; dz <= LoadRadius; dz++)
-        for (int dx = -LoadRadius; dx <= LoadRadius; dx++)
-            if (dx * dx + dz * dz <= LoadRadius * LoadRadius)
+        for (int dz = -radius; dz <= radius; dz++)
+        for (int dx = -radius; dx <= radius; dx++)
+            if (dx * dx + dz * dz <= radius * radius)
                 offsets.Add((dx, dz));
 
         offsets.Sort((a, b) => (a.X * a.X + a.Z * a.Z).CompareTo(b.X * b.X + b.Z * b.Z));
         return offsets.ToArray();
     }
+
+    public void Dispose() => _loader.Dispose();
 
     public void Update(Camera3D camera, BoundingBox playerBounds, EngineSettings settings)
     {
@@ -266,6 +418,8 @@ public class VoxelWorld
         }
 
         _hasSculptTarget = false;
+        _stroking = false;
+        _brushActive = false;
 
         // Inputs: Mouse + keyboard fallback
         bool remove = Raylib.IsMouseButtonPressed(MouseButton.Left) || Raylib.IsKeyPressed(KeyboardKey.O);
@@ -284,11 +438,20 @@ public class VoxelWorld
     /// <summary>Flash the preview briefly, for instance after the reach or brush size changed</summary>
     public void PulsePreview() => _previewTimer = Math.Max(_previewTimer, _settings.PreviewHold);
 
+    /// <summary>Ends a running stroke; the next frame with a button held starts a fresh one. For mode switches.</summary>
+    public void CancelStroke() => _stroking = false;
+
     public void DrawHover()
     {
         // Fade out at the end instead of cutting: a jump is more noticeable than the preview itself
         const float fadeSeconds = 0.35f;
         float visibility = ShowPreviewAlways ? 1f : Math.Clamp(_previewTimer / fadeSeconds, 0f, 1f);
+
+        // The brush stays visible at rest, or the player carves and builds blind: without the
+        // sphere there is no telling the radius, the bite point or that a stroke is running
+        if (UsesSculptTool && _settings.ShowBrushAlways)
+            visibility = MathF.Max(visibility, _brushActive ? 1f : 0.55f);
+
         if (visibility <= 0f) return;
 
         if (_hasSculptTarget)
@@ -326,161 +489,159 @@ public class VoxelWorld
         float radius = _sculptRadiusForDraw * pulse;
 
         Raylib.BeginBlendMode(BlendMode.Alpha);
-        Raylib.DrawSphere(_previewCenter, radius, Fade(tint, (active ? 60 : 34) / 255f * visibility));
+        Raylib.DrawSphere(_previewCenter, radius, Fade(tint, (active ? 60 : 30) / 255f * visibility));
         Raylib.EndBlendMode();
 
-        Raylib.DrawSphereWires(_previewCenter, radius, 12, 12, Fade(tint, (active ? 200 : 150) / 255f * visibility));
+        Raylib.DrawSphereWires(_previewCenter, radius, 12, 12, Fade(tint, (active ? 200 : 140) / 255f * visibility));
     }
 
-    // --- Sculpt-Modus ---
+    // --- Sculpt mode ---
 
     private void UpdateSculpt(Camera3D camera, BoundingBox playerBounds, float buildReach, float sculptRadius)
     {
         _sculptRadiusForDraw = sculptRadius;
-        _hasSculptTarget = false;
+        _hasSculptTarget = true;
 
         Ray ray = Raylib.GetScreenToWorldRay(
             new Vector2(Raylib.GetScreenWidth() / 2, Raylib.GetScreenHeight() / 2),
-            camera
-        );
+            camera);
+        Vector3 direction = Vector3.Normalize(ray.Direction);
 
         // Raycast at sub-voxel resolution (coordinates x8), so it also reads drilled holes correctly
         var hit = VoxelRaycast.Cast(
             GetSubVoxel,
             ray.Position * SubVoxels.Divisions,
-            ray.Direction,
+            direction,
             buildReach * SubVoxels.Divisions);
 
-        if (hit.HasHit)
-        {
-            _sculptTarget = new Vector3(
+        bool hasSurface = hit.HasHit;
+        float surfaceDistance = hasSurface ? hit.Distance / SubVoxels.Divisions : buildReach;
+
+        // The hit cell's centre, or mid-air at the end of the reach when nothing is in the way
+        Vector3 surfacePoint = hasSurface
+            ? new Vector3(
                 (hit.Block.X + 0.5f) * SubVoxels.CellSize,
                 (hit.Block.Y + 0.5f) * SubVoxels.CellSize,
-                (hit.Block.Z + 0.5f) * SubVoxels.CellSize);
-        }
-        else
-        {
-            // nothing hit: shape mid-air at the end of the reach
-            _sculptTarget = ray.Position + Vector3.Normalize(ray.Direction) * buildReach;
-        }
-        _hasSculptTarget = true;
-        _previewCenter = _sculptTarget;
+                (hit.Block.Z + 0.5f) * SubVoxels.CellSize)
+            : ray.Position + direction * buildReach;
 
-        // Track the target's depth every frame, button held or not. Digging and building move the
-        // surface by at most a brush radius per frame, so only a real edge trips the threshold.
-        float hitDistance = hit.HasHit ? hit.Distance / SubVoxels.Divisions : buildReach;
-        bool rayJumped =
-            hit.HasHit != _rayHadHit ||
-            MathF.Abs(hitDistance - _rayLastDistance) > MathF.Max(DepthJumpMeters, hitDistance * DepthJumpFraction);
-
-        _rayHadHit = hit.HasHit;
-        _rayLastDistance = hitDistance;
+        Vector3 surfaceNormal = hasSurface && hit.Normal.LengthSquared() > 0.5f ? hit.Normal : -direction;
 
         bool carve = Raylib.IsMouseButtonDown(MouseButton.Left);
         bool build = Raylib.IsMouseButtonDown(MouseButton.Right);
+        _brushActive = carve || build;
 
-        if (!carve && !build)
+        if (!_brushActive)
         {
             _stroking = false;
-            _hasBuildFront = false;
+            _previewCenter = surfacePoint;
             return;
         }
 
         bool add = !carve && build; // with both buttons down, carving wins
         if (_stroking && add != _strokeAdding) _stroking = false;
 
-        float frameTime = Raylib.GetFrameTime();
+        bool fresh = !_stroking;
+        if (fresh) Anchor(surfacePoint, surfaceNormal);
+
+        Vector3 target = PointOnAnchorPlane(ray.Position, direction, buildReach);
+        float planeDistance = Vector3.Distance(ray.Position, target);
+
+        // The stroke follows the true surface again once that has left the plane by more than a
+        // radius: carving broke through, or the ray slid off an edge onto something else. A nearer
+        // hit is ignored while adding (that is the material just built) but followed while
+        // carving, so the bite never floats behind a wall the ray runs into.
+        float slack = sculptRadius * ReanchorSlack;
+        bool surfaceFellAway = hasSurface ? surfaceDistance > planeDistance + slack : planeDistance > buildReach;
+        bool surfaceCameCloser = !add && hasSurface && surfaceDistance < planeDistance - slack;
+
+        if (!fresh && (surfaceFellAway || surfaceCameCloser))
+        {
+            Anchor(surfacePoint, surfaceNormal);
+            target = surfacePoint;
+            fresh = true;
+        }
+
         _strokeAdding = add;
-        _strokeParticleCooldown -= frameTime;
+        _strokeFeedbackCooldown -= Raylib.GetFrameTime();
+        _previewCenter = target;
 
         // Hard-edged Sculpt mode switches cells outright, or the cube look frays; Smooth lays down
         // a soft falloff, which is what marching cubes turns into a rounded surface
         float edge = Mode == TerrainMode.Smooth ? sculptRadius * _settings.BrushSoftness : 0f;
 
-        // The target jumped to another surface without the hand doing anything: start over there,
-        // otherwise the stroke drags a tube across the gap in between.
-        if (rayJumped) _hasBuildFront = false;
-
-        // Carving acts on the target immediately, since any lag gets in the way while digging.
-        // Adding creeps towards it so the surface grows steadily instead of jumping by whole spheres.
-        Vector3 point = add ? AdvanceBuildFront(_sculptTarget, sculptRadius, frameTime) : _sculptTarget;
-        if (!add) _hasBuildFront = false;
-
-        _previewCenter = point;
-
-        bool changed = StampStroke(point, sculptRadius, add, edge, playerBounds, rayJumped);
-
-        _strokePrevious = point;
+        bool changed = StampStroke(target, sculptRadius, add, edge, playerBounds, fresh);
         _stroking = true;
 
-        if (changed && _strokeParticleCooldown <= 0f)
+        if (changed && _strokeFeedbackCooldown <= 0f)
         {
-            _strokeParticleCooldown = SculptParticleInterval;
-            Color albedo = TerrainColors.ForBlock(
-                BlockRegistry.Terrain,
-                (int)MathF.Floor(_sculptTarget.X), (int)MathF.Floor(_sculptTarget.Y), (int)MathF.Floor(_sculptTarget.Z));
+            _strokeFeedbackCooldown = FeedbackInterval;
 
-            if (add) BlockPlaced?.Invoke(_sculptTarget, albedo);
-            else BlockBroken?.Invoke(_sculptTarget, albedo);
+            // Debris in the colour of what is actually there: the block under the bite when
+            // carving, the material being laid down when building
+            int bx = (int)MathF.Floor(target.X), by = (int)MathF.Floor(target.Y), bz = (int)MathF.Floor(target.Z);
+            int id = add ? BuildMaterial : GetBlock(bx, by, bz);
+            if (!BlockRegistry.IsSolid(id)) id = BlockRegistry.Terrain;
+            Color albedo = TerrainColors.ForBlock(id, bx, by, bz);
+
+            if (add) BlockPlaced?.Invoke(target, albedo);
+            else BlockBroken?.Invoke(target, albedo);
         }
     }
 
-    /// <summary>
-    /// The build front trails the crosshair at the configured pace. Move the mouse faster and you
-    /// outrun it: it then visibly stays behind instead of snapping to the target and filling in the
-    /// skipped stretch within one frame. It never falls back further than
-    /// <see cref="BuildMaxLag"/> radii, or you would be building blind.
-    /// </summary>
-    private Vector3 AdvanceBuildFront(Vector3 target, float radius, float frameTime)
+    private void Anchor(Vector3 point, Vector3 normal)
     {
-        if (!_hasBuildFront)
-        {
-            _hasBuildFront = true;
-            _buildFront = target;
-            return _buildFront;
-        }
+        _anchorPoint = point;
+        _anchorNormal = normal;
+        _strokePrevious = point;
+    }
 
-        Vector3 delta = target - _buildFront;
-        float distance = delta.Length();
-        if (distance < 1e-4f) return _buildFront;
+    /// <summary>Where the crosshair ray crosses the plane of the current stroke</summary>
+    private Vector3 PointOnAnchorPlane(Vector3 origin, Vector3 direction, float reach)
+    {
+        float facing = Vector3.Dot(direction, _anchorNormal);
+        float anchorDistance = Vector3.Distance(origin, _anchorPoint);
 
-        float step = MathF.Max(0.01f, _settings.BuildSpeed) * frameTime;
-        float pull = MathF.Max(step, distance - radius * BuildMaxLag);
+        // Looking along the plane: keep the depth of the anchor instead of shooting off to the horizon
+        if (MathF.Abs(facing) < 0.2f) return origin + direction * anchorDistance;
 
-        _buildFront = pull >= distance ? target : _buildFront + delta * (pull / distance);
+        float t = Vector3.Dot(_anchorPoint - origin, _anchorNormal) / facing;
+        t = Math.Clamp(t, 0.5f, reach * 1.5f);
 
-        return _buildFront;
+        return origin + direction * t;
     }
 
     /// <summary>
     /// Stamps the brush along the stretch covered since the last frame. A single stamp per frame
     /// would leave a string of beads when the mouse moves fast; overlapping spheres give a
-    /// continuous tube instead.
+    /// continuous tube instead. <paramref name="fresh"/> marks the first stamp of a stroke, which
+    /// has no stretch to fill.
     /// </summary>
-    private bool StampStroke(Vector3 target, float radius, bool add, float edge, BoundingBox playerBounds, bool jumped)
+    private bool StampStroke(Vector3 target, float radius, bool add, float edge, BoundingBox playerBounds, bool fresh)
     {
-        bool changed = SculptBlob(target, radius, add, edge, BlockRegistry.Stone, playerBounds);
-
-        // A jump means the two positions are on different surfaces; joining them would draw a
-        // bridge through the air that nobody asked for
-        if (!_stroking || jumped) return changed;
-
         Vector3 delta = target - _strokePrevious;
         float distance = delta.Length();
 
+        // Holding still: the brush would only re-stamp what it already shaped
+        if (!fresh && distance < radius * StrokeMinMove) return false;
+
+        bool changed = SculptBlob(target, radius, add, edge, BuildMaterial, playerBounds);
+
         float step = radius * StrokeStepFactor;
-        if (distance < step) return changed;
-
-        // Past the budget the stamps spread out instead of the segment being dropped: a slightly
-        // coarser line still beats a hole in the stroke
-        int stamps = Math.Min((int)(distance / step), StrokeMaxStamps);
-
-        for (int i = 1; i <= stamps; i++)
+        if (!fresh && distance >= step)
         {
-            Vector3 point = _strokePrevious + delta * (i / (float)(stamps + 1));
-            changed |= SculptBlob(point, radius, add, edge, BlockRegistry.Stone, playerBounds);
+            // Past the budget the stamps spread out instead of the segment being dropped: a
+            // slightly coarser line still beats a hole in the stroke
+            int stamps = Math.Min((int)(distance / step), StrokeMaxStamps);
+
+            for (int i = 1; i <= stamps; i++)
+            {
+                Vector3 point = _strokePrevious + delta * (i / (float)(stamps + 1));
+                changed |= SculptBlob(point, radius, add, edge, BuildMaterial, playerBounds);
+            }
         }
 
+        _strokePrevious = target;
         return changed;
     }
 
@@ -694,11 +855,11 @@ public class VoxelWorld
         if (GetBlock(cell.X, cell.Y, cell.Z) != 0) return; // must be air
         if (IntersectsBlock(playerBounds, cell.X, cell.Y, cell.Z)) return; // do not build into the player
 
-        SetBlock(cell.X, cell.Y, cell.Z, BlockRegistry.Stone);
+        SetBlock(cell.X, cell.Y, cell.Z, BuildMaterial);
 
         BlockPlaced?.Invoke(
             new Vector3(cell.X + 0.5f, cell.Y + 0.5f, cell.Z + 0.5f),
-            TerrainColors.ForBlock(BlockRegistry.Stone, cell.X, cell.Y, cell.Z));
+            TerrainColors.ForBlock(BuildMaterial, cell.X, cell.Y, cell.Z));
     }
 
     private static bool IntersectsBlock(BoundingBox box, int x, int y, int z)
@@ -761,21 +922,21 @@ public class VoxelWorld
     // Edits on edges and corners also affect the meshes of the (diagonal) neighbours, for face culling and AO
     private void FireDirtyAround(ChunkCoord cc, int lx, int lz, int y)
     {
-        ChunkDirty?.Invoke(cc, y, y);
+        ChunkDirty?.Invoke(cc, y, y, MeshReason.Edit);
 
         bool west = lx == 0;
         bool east = lx == Chunk.Size - 1;
         bool north = lz == 0;
         bool south = lz == Chunk.Size - 1;
 
-        if (west) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z), y, y);
-        if (east) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z), y, y);
-        if (north) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z - 1), y, y);
-        if (south) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z + 1), y, y);
-        if (west && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z - 1), y, y);
-        if (west && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z + 1), y, y);
-        if (east && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z - 1), y, y);
-        if (east && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z + 1), y, y);
+        if (west) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z), y, y, MeshReason.Edit);
+        if (east) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z), y, y, MeshReason.Edit);
+        if (north) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z - 1), y, y, MeshReason.Edit);
+        if (south) ChunkDirty?.Invoke(new ChunkCoord(cc.X, cc.Z + 1), y, y, MeshReason.Edit);
+        if (west && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z - 1), y, y, MeshReason.Edit);
+        if (west && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X - 1, cc.Z + 1), y, y, MeshReason.Edit);
+        if (east && north) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z - 1), y, y, MeshReason.Edit);
+        if (east && south) ChunkDirty?.Invoke(new ChunkCoord(cc.X + 1, cc.Z + 1), y, y, MeshReason.Edit);
     }
 
     // --- Coordinate helpers ---

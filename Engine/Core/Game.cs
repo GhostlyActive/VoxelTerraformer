@@ -11,9 +11,9 @@ namespace VoxelEngine.Core;
 /// 2D before the scene, <see cref="DrawWorld"/> inside BeginMode3D, <see cref="DrawHud"/> in 2D on
 /// top again. Menus are drawn by the host above all of it.
 ///
-/// Keep the constructor cheap: the registry creates an instance just to show the list, before it
-/// is clear whether the game will be started at all. Everything expensive belongs in
-/// <see cref="Load"/>.
+/// Keep the constructor cheap and put everything expensive into <see cref="Load"/>: an instance
+/// exists from the moment the host switches to the game, and the world it builds should be
+/// released again in <see cref="Unload"/>.
 /// </summary>
 public abstract class Game
 {
@@ -28,6 +28,12 @@ public abstract class Game
 
     /// <summary>Controls listed in the pause menu, one line per entry</summary>
     public virtual IReadOnlyList<string> ControlHints => Array.Empty<string>();
+
+    /// <summary>
+    /// Near and far clip plane in metres. The engine defaults suit a terrain world; a game that
+    /// spans kilometres overrides them and the host applies them while the game runs.
+    /// </summary>
+    public virtual (double Near, double Far) ClipPlanes => (Rendering.Frustum.NearPlane, Rendering.Frustum.FarPlane);
 
     internal void Attach(GameContext context) => Context = context;
 
@@ -58,6 +64,9 @@ public abstract class Game
 
     /// <summary>Load a save; only called when <see cref="SupportsSaving"/> holds</summary>
     public virtual bool LoadGame() => false;
+
+    /// <summary>A few lines about the game's state, printed at the end of a smoke or benchmark run</summary>
+    public virtual string DebugReport() => "";
 
     /// <summary>Release everything <see cref="Load"/> created (meshes, shaders, sounds)</summary>
     public virtual void Unload() { }

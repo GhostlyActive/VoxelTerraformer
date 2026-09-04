@@ -6,13 +6,14 @@ using VoxelEngine.Scenes;
 using VoxelEngine.UI;
 using VoxelEngine.World;
 
-namespace Terraformer.Games.RocketStorm;
+namespace Games.RocketStorm;
 
 /// <summary>
 /// Survival under fire. The world runs in Smooth mode and every impact tears a round crater out
 /// of the ground. The sphere brush stays live, so cover is something you dig for yourself:
 /// sitting in a hole you can ride out a direct hit next to you.
 /// </summary>
+[GameDefinition("RocketStorm", "Rocket Storm", "Survive the barrage - you dig your own cover")]
 public sealed class RocketStormGame : Game
 {
     private const float MaxHealth = 100f;
@@ -54,7 +55,7 @@ public sealed class RocketStormGame : Game
             DetailAmplitude = 3f,
         };
 
-        _scene = new VoxelTerrainScene(Context.Settings, new VoxelTerrainOptions
+        _scene = new VoxelTerrainScene(Context, new VoxelTerrainOptions
         {
             SaveSlot = "rocket-storm",
             Spawn = new Vector3(128, 60, 128),

@@ -42,15 +42,31 @@ public static class BlockRegistry
 
     private static void Define(BlockDef def) => _defs[def.Id] = def;
 
-    /// <summary>Add a new material for a game; returns the id it was given</summary>
+    /// <summary>
+    /// Add a material for a game; returns the id it was given. Registering the same name with the
+    /// same values again hands back the existing id, so a game may register in <see cref="Core.Game.Load"/>
+    /// every time it starts. The same name with different values is a clash and throws.
+    /// Only call it from Load: the mesh workers of a running scene read the definitions.
+    /// </summary>
     public static byte Register(string name, Color color, float hardness = 1f, float emissive = 0f)
     {
+        for (int id = FirstGameId; id < _nextGameId; id++)
+        {
+            BlockDef existing = _defs[id];
+            if (existing.Name != name) continue;
+
+            bool same = existing.BaseColor.Equals(color) && existing.Hardness == hardness && existing.Emissive == emissive;
+            if (same) return (byte)id;
+
+            throw new InvalidOperationException($"Block '{name}' is already registered with different values");
+        }
+
         if (_nextGameId == 255) throw new InvalidOperationException("No free block id left");
 
-        byte id = _nextGameId++;
-        Define(new BlockDef(id, name, Solid: true, hardness, color, UseHeightGradient: false, emissive));
+        byte fresh = _nextGameId++;
+        Define(new BlockDef(fresh, name, Solid: true, hardness, color, UseHeightGradient: false, emissive));
 
-        return id;
+        return fresh;
     }
 
     public static BlockDef Get(int id) => _defs[(byte)id];

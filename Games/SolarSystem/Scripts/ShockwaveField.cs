@@ -1,7 +1,7 @@
 using Raylib_cs;
 using System.Numerics;
 
-namespace Terraformer.Games.SolarSystem;
+namespace Games.SolarSystem;
 
 /// <summary>
 /// The blast front of a dying planet: a glowing shell racing outward, and a flat ring of shards

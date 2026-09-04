@@ -20,6 +20,16 @@ public class Chunk
     /// <summary>True once the chunk changed since it was generated or loaded, so it needs saving</summary>
     public bool Modified { get; private set; }
 
+    /// <summary>
+    /// All eight neighbours are loaded. Only then can the chunk be meshed for good: its border
+    /// faces and ambient occlusion read one block into the neighbours, and meshing it earlier
+    /// would show a cliff wall at the frontier that has to be thrown away a moment later.
+    /// </summary>
+    internal bool Surrounded { get; set; }
+
+    /// <summary>The first full-column mesh was requested; edits keep it up to date from there on</summary>
+    internal bool MeshRequested { get; set; }
+
     public Chunk(ChunkCoord coord, int worldHeight, ITerrainGenerator generator)
     {
         Coord = coord;
@@ -79,6 +89,8 @@ public class Chunk
 
     internal IReadOnlyDictionary<int, byte[]> Refinements => _refinements;
 
+    internal int RefinementCount => _refinements.Count;
+
     internal static (int X, int Y, int Z) DecodeIndex(int index)
     {
         int x = index % Size;
@@ -90,6 +102,14 @@ public class Chunk
     // Copies a whole X row in one go (for the mesh snapshot)
     public void CopyRow(int y, int z, byte[] destination, int destinationIndex)
         => Array.Copy(_blocks, Index(0, y, z), destination, destinationIndex, Size);
+
+    /// <summary>Copies the Z run of blocks at one x into a strided destination (the east and west shells of a snapshot)</summary>
+    public void CopyColumn(int y, int x, byte[] destination, int destinationIndex, int destinationStride)
+    {
+        int source = Index(x, y, 0);
+        for (int z = 0; z < Size; z++)
+            destination[destinationIndex + z * destinationStride] = _blocks[source + z * Size];
+    }
 
     private static bool InBounds(int x, int y, int z, int worldHeight)
         => x >= 0 && x < Size &&

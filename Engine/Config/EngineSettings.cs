@@ -24,9 +24,6 @@ public sealed class EngineSettings
     /// <summary>Soft brush falloff as a multiple of the radius (Smooth mode only): 0 = hard edge, larger = rounder blobs</summary>
     public float BrushSoftness { get; set; } = 0.6f;
 
-    /// <summary>Speed of the build front in metres per second (right mouse). Low = grows slowly and stays controllable.</summary>
-    public float BuildSpeed { get; set; } = 2.5f;
-
     /// <summary>How long the brush sphere or block outline stays visible after a size change (seconds)</summary>
     public float PreviewHold { get; set; } = 1.0f;
 
@@ -41,49 +38,60 @@ public sealed class EngineSettings
     /// <summary>Speed of the day cycle; 0 stops the sun. Ignored by games that pin the sun.</summary>
     public float TimeFlow { get; set; } = 1f;
 
-    public float FogStart { get; set; } = 460f;
-    public float FogEnd { get; set; } = 740f;
+    public float FogStart { get; set; } = 560f;
+    public float FogEnd { get; set; } = 940f;
+
+    /// <summary>Radius in chunks the world streams around the player (32 blocks each)</summary>
+    public int ViewDistanceChunks { get; set; } = 32;
+
+    /// <summary>Radius in chunks meshed at full detail; beyond it the terrain drops to 2 m and then 4 m blocks</summary>
+    public int DetailRadiusChunks { get; set; } = 8;
+
+    /// <summary>Strength of the surface grid Sculpt mode draws near the camera; 0 hides it</summary>
+    public float SculptGridStrength { get; set; } = 1f;
+
+    /// <summary>Show the brush sphere at rest in Sculpt and Smooth mode, not only after a size change</summary>
+    public bool ShowBrushAlways { get; set; } = true;
 
     /// <summary>Share of the sky cells that carry a cloud</summary>
     public float CloudCoverage { get; set; } = 0.35f;
     public float CloudHeight { get; set; } = 80f;
     public float CloudDrift { get; set; } = 1.2f;
 
-    // File name from before the engine split; kept so existing settings do not silently fall
-    // back to the defaults
-    private static string FilePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "Terraformer", "debug-settings.json");
+    private string? _filePath;
 
-    public static EngineSettings Load()
+    /// <summary>Reads the settings file, or starts from the defaults when there is none or it is broken</summary>
+    public static EngineSettings Load(string filePath)
     {
+        EngineSettings settings = new();
+
         try
         {
-            if (File.Exists(FilePath))
-            {
-                EngineSettings? loaded = JsonSerializer.Deserialize<EngineSettings>(File.ReadAllText(FilePath));
-                if (loaded != null) return loaded;
-            }
+            if (File.Exists(filePath))
+                settings = JsonSerializer.Deserialize<EngineSettings>(File.ReadAllText(filePath)) ?? settings;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
             // Unreadable or broken file: carry on with the defaults instead of crashing
         }
 
-        return new EngineSettings();
+        settings._filePath = filePath;
+        return settings;
     }
 
+    /// <summary>Writes the settings back to the file they were loaded from; a no-op for settings that never had one</summary>
     public void Save()
     {
+        if (_filePath == null) return;
+
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+            Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+            File.WriteAllText(_filePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             // Saving is a convenience; the game runs fine without it
         }
     }
-
 }

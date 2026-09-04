@@ -2,7 +2,7 @@ using Raylib_cs;
 using System.Numerics;
 using VoxelEngine.Effects;
 
-namespace Terraformer.Games.SolarSystem;
+namespace Games.SolarSystem;
 
 /// <summary>
 /// The rubble a hit throws off. Chunks keep flying long after the explosion has faded: they fall

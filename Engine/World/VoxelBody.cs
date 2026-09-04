@@ -201,25 +201,42 @@ public sealed class VoxelBody
         float frequency = 3.2f / Size;
         float fineFrequency = frequency * 4.5f;
 
-        for (int y = 0; y < Size; y++)
-        for (int z = 0; z < Size; z++)
-        for (int x = 0; x < Size; x++)
+        // The bumps stay within this share of the radius (coarse and fine noise are both -0.5..0.5),
+        // so anything deeper than that plus the crust is core and anything further out is air,
+        // without asking the noise. On a planet of 250 voxels that is most of the volume.
+        float bumpLimit = roughness * 2f * 0.57f;
+        float deepestSurface = radiusVoxels * (1f - bumpLimit);
+        float highestSurface = radiusVoxels * (1f + bumpLimit);
+
+        Parallel.For(0, Size, y =>
         {
-            var voxel = new Vector3(x + 0.5f, y + 0.5f, z + 0.5f);
-            float distance = Vector3.Distance(voxel, _gridCenter);
+            for (int z = 0; z < Size; z++)
+            for (int x = 0; x < Size; x++)
+            {
+                var voxel = new Vector3(x + 0.5f, y + 0.5f, z + 0.5f);
+                float distance = Vector3.Distance(voxel, _gridCenter);
 
-            // Two scales of noise: the coarse one shapes basins and ridges, the fine one breaks up
-            // the concentric terraces a voxelised sphere would otherwise show as tree rings
-            float coarse = Noise.Fbm3D(x * frequency, y * frequency, z * frequency, seed, 4, 0.5f, 2f) - 0.5f;
-            float fine = Noise.Fbm3D(x * fineFrequency, y * fineFrequency, z * fineFrequency, seed + 777, 2, 0.5f, 2f) - 0.5f;
+                if (distance > highestSurface) continue;
 
-            float bumps = coarse * 0.78f + fine * 0.36f;
-            float surface = radiusVoxels * (1f + bumps * roughness * 2f);
+                if (distance <= deepestSurface - crustDepth)
+                {
+                    _blocks[Index(x, y, z)] = core;
+                    continue;
+                }
 
-            if (distance > surface) continue;
+                // Two scales of noise: the coarse one shapes basins and ridges, the fine one breaks up
+                // the concentric terraces a voxelised sphere would otherwise show as tree rings
+                float coarse = Noise.Fbm3D(x * frequency, y * frequency, z * frequency, seed, 4, 0.5f, 2f) - 0.5f;
+                float fine = Noise.Fbm3D(x * fineFrequency, y * fineFrequency, z * fineFrequency, seed + 777, 2, 0.5f, 2f) - 0.5f;
 
-            _blocks[Index(x, y, z)] = distance > surface - crustDepth ? crust : core;
-        }
+                float bumps = coarse * 0.78f + fine * 0.36f;
+                float surface = radiusVoxels * (1f + bumps * roughness * 2f);
+
+                if (distance > surface) continue;
+
+                _blocks[Index(x, y, z)] = distance > surface - crustDepth ? crust : core;
+            }
+        });
 
         Array.Fill(_chunkDirty, true);
     }

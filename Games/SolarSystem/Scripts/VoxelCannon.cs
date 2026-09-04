@@ -3,7 +3,7 @@ using System.Numerics;
 using VoxelEngine.Audio;
 using VoxelEngine.Effects;
 
-namespace Terraformer.Games.SolarSystem;
+namespace Games.SolarSystem;
 
 /// <summary>
 /// The ship's cannon. Holding the trigger packs more material into the round: a tap sends a small
@@ -21,14 +21,14 @@ public sealed class VoxelCannon
     /// <summary>Hold time for a full charge, in seconds</summary>
     public const float FullChargeSeconds = 1.6f;
 
-    private const float MinShotSize = 10f;
-    private const float MaxShotSize = 46f;
-    private const float MinBlastRadius = 70f;
-    private const float MaxBlastRadius = 360f;
+    private const float MinShotSize = 14f;
+    private const float MaxShotSize = 60f;
+    private const float MinBlastRadius = 90f;
+    private const float MaxBlastRadius = 460f;
 
     // Heavy rounds fly slower: the arc gives the size some weight
-    private const float LightShotSpeed = 1500f;
-    private const float HeavyShotSpeed = 850f;
+    private const float LightShotSpeed = 2200f;
+    private const float HeavyShotSpeed = 1300f;
 
     private const float ShotLifetime = 22f;
     private const float ReloadSeconds = 0.18f;
