@@ -1,6 +1,7 @@
 using Raylib_cs;
 using VoxelEngine.Audio;
 using VoxelEngine.Config;
+using VoxelEngine.Media;
 using VoxelEngine.Rendering;
 using VoxelEngine.UI;
 
@@ -52,6 +53,7 @@ public sealed class GameHost : IDisposable
 
     private readonly FrameStats _frameStats = new();
     private readonly FrameProfiler _profiler = new();
+    private readonly ScreenRecorder _recorder = new();
 
     /// <summary>A frame longer than this is treated as a stall: the simulation steps at most this far</summary>
     private const float MaxFrameSeconds = 0.1f;
@@ -79,6 +81,18 @@ public sealed class GameHost : IDisposable
     };
 
     private static readonly string[] ResolutionLabels = Resolutions.Select(r => $"{r.Width} x {r.Height}").ToArray();
+
+    /// <summary>Video heights offered for a recording; 0 keeps the size of the window</summary>
+    private static readonly int[] RecordingHeights = { 0, 720, 1080, 1440, 2160 };
+
+    private static readonly string[] RecordingHeightLabels =
+    {
+        "as shown", "720p", "1080p", "1440p", "2160p",
+    };
+
+    private static readonly int[] RecordingRates = { 30, 60 };
+
+    private static readonly string[] RecordingRateLabels = { "30 fps", "60 fps" };
 
     public void Run(string startGameId)
     {
@@ -123,6 +137,11 @@ public sealed class GameHost : IDisposable
             .Value("View distance chunks", () => _settings.ViewDistanceChunks, v => _settings.ViewDistanceChunks = (int)v, defaults.ViewDistanceChunks, 2f, 6f, World.VoxelWorld.MaxViewDistance, "0")
             .Value("Detail radius chunks", () => _settings.DetailRadiusChunks, v => _settings.DetailRadiusChunks = (int)v, defaults.DetailRadiusChunks, 1f, 2f, World.VoxelWorld.MaxViewDistance, "0");
 
+        _pauseMenu.Settings.AddSection("INTERFACE AND RECORDING", () => _store.Save("Engine", _settings))
+            .Toggle("In-game text and readouts", () => _settings.ShowHud, v => _settings.ShowHud = v, defaults.ShowHud)
+            .Choice("Video resolution", RecordingHeightLabels, RecordingHeightIndex, SetRecordingHeight, 2)
+            .Choice("Video frame rate", RecordingRateLabels, RecordingRateIndex, SetRecordingRate, 1);
+
         _tuningMenu = new TuningMenu();
         _cursorFree = smokeTest;
         SetDebugOverlay(smokeTest); // on right away in the smoke test, so the stats end up on the screenshot
@@ -159,6 +178,7 @@ public sealed class GameHost : IDisposable
             if (!paused)
             {
                 if (Raylib.IsKeyPressed(KeyboardKey.F3)) SetDebugOverlay(!DebugOverlay);
+                if (Raylib.IsKeyPressed(KeyboardKey.K)) ShowStatus(_recorder.Toggle(_settings.RecordingHeight, _settings.RecordingFps));
 
                 _tuningMenu.Update();
                 _game!.Update(dt);
@@ -179,18 +199,27 @@ public sealed class GameHost : IDisposable
             Raylib.EndMode3D();
             _profiler.Add(FrameSlot.Draw, drawStarted);
 
-            _game.DrawHud();
-
-            if (DebugOverlay)
+            if (_settings.ShowHud)
             {
-                Raylib.DrawText(
-                    $"{_frameStats.AverageMs:F2} ms | peak {_frameStats.PeakMs:F2} ms | {_frameStats.Fps} FPS",
-                    10, 10, 20, Color.Green);
-                Raylib.DrawText(_profiler.Summary(), 10, Raylib.GetScreenHeight() - 24, 14, Color.Green);
+                _game.DrawHud();
+
+                if (DebugOverlay)
+                {
+                    Raylib.DrawText(
+                        $"{_frameStats.AverageMs:F2} ms | peak {_frameStats.PeakMs:F2} ms | {_frameStats.Fps} FPS",
+                        10, 10, 20, Color.Green);
+                    Raylib.DrawText(_profiler.Summary(), 10, Raylib.GetScreenHeight() - 24, 14, Color.Green);
+                }
             }
 
             _tuningMenu.Draw(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
             _pauseMenu.Draw(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
+
+            // The frame goes into the video here, so what follows is for the player only: the
+            // badge that says a recording is running, and the engine's own status line
+            _recorder.CaptureFrame(frameTime);
+
+            DrawRecordingBadge();
             DrawStatus();
 
             Raylib.EndDrawing();
@@ -257,6 +286,16 @@ public sealed class GameHost : IDisposable
         _settings.WindowWidth = width;
         _settings.WindowHeight = height;
     }
+
+    private int RecordingHeightIndex() => Math.Max(0, Array.IndexOf(RecordingHeights, _settings.RecordingHeight));
+
+    private void SetRecordingHeight(int index)
+        => _settings.RecordingHeight = RecordingHeights[Math.Clamp(index, 0, RecordingHeights.Length - 1)];
+
+    private int RecordingRateIndex() => Math.Max(0, Array.IndexOf(RecordingRates, _settings.RecordingFps));
+
+    private void SetRecordingRate(int index)
+        => _settings.RecordingFps = RecordingRates[Math.Clamp(index, 0, RecordingRates.Length - 1)];
 
     private void HandleMenu()
     {
@@ -332,6 +371,25 @@ public sealed class GameHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// A pulsing dot and the running time while a recording is on. Drawn after the frame was
+    /// handed to the recorder, so it marks the screen without ever landing in the video.
+    /// </summary>
+    private void DrawRecordingBadge()
+    {
+        if (!_recorder.IsRecording) return;
+
+        int seconds = (int)_recorder.ElapsedSeconds;
+        string label = $"REC  {seconds / 60:00}:{seconds % 60:00}";
+
+        int textWidth = Raylib.MeasureText(label, 18);
+        int x = Raylib.GetScreenWidth() - 20 - textWidth;
+
+        float pulse = 0.55f + 0.45f * MathF.Sin(_recorder.ElapsedSeconds * 5f);
+        Raylib.DrawCircle(x - 16, 27, 6f, new Color((byte)255, (byte)70, (byte)70, (byte)(140 + 115 * pulse)));
+        Hud.Text(label, x, 18, 18, new Color(255, 210, 210, 255));
+    }
+
     private void DrawStatus()
     {
         if (_statusTimer <= 0f) return;
@@ -342,6 +400,7 @@ public sealed class GameHost : IDisposable
 
     public void Dispose()
     {
+        _recorder.Dispose();
         _game?.Unload();
         _audio?.Dispose();
 

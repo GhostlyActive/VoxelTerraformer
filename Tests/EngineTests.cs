@@ -439,6 +439,63 @@ public class JetpackTests
     }
 
     [Fact]
+    public void GodmodeHoversInsteadOfFalling()
+    {
+        (VoxelWorld world, PlayerController player) = Standing(jetpack: true);
+        player.Godmode = true;
+
+        float startedAt = player.Position.Y;
+        for (float t = 0f; t < 3f; t += 0.016f)
+            player.Step(world, PlayerInput.None, 0.016f);
+
+        world.Dispose();
+
+        // Not pinned to the millimetre: the velocity the player arrived with is eased out rather
+        // than cut, so a few centimetres of drift are the point. Gravity would cost metres.
+        Assert.InRange(player.Position.Y, startedAt - 0.1f, startedAt + 0.1f);
+    }
+
+    [Fact]
+    public void GodmodeRisesOnJumpAndSinksOnDescendStraightThroughTheGround()
+    {
+        (VoxelWorld world, PlayerController player) = Standing(jetpack: false);
+        player.Godmode = true;
+
+        float startedAt = player.Position.Y;
+        for (float t = 0f; t < 2f; t += 0.016f)
+            player.Step(world, PlayerInput.None with { JumpHeld = true }, 0.016f);
+
+        float climbed = player.Position.Y;
+        Assert.True(climbed > startedAt + 20f, $"free flight climbed {climbed - startedAt:0.0} m in two seconds");
+
+        // Down through solid terrain: godmode ignores collision, so the floor is no floor
+        for (float t = 0f; t < 4f; t += 0.016f)
+            player.Step(world, PlayerInput.None with { Descend = true }, 0.016f);
+
+        world.Dispose();
+        Assert.True(player.Position.Y < Ground - 5f, $"descending stopped at {player.Position.Y:0.0}, ground is {Ground}");
+    }
+
+    [Fact]
+    public void LeavingGodmodeHandsBackAFullTankAndGravity()
+    {
+        (VoxelWorld world, PlayerController player) = Standing(jetpack: true);
+        player.Godmode = true;
+
+        for (float t = 0f; t < 2f; t += 0.016f)
+            player.Step(world, PlayerInput.None with { JumpHeld = true }, 0.016f);
+
+        player.Godmode = false;
+        Assert.Equal(1f, player.Fuel01);
+
+        for (float t = 0f; t < 12f; t += 0.016f)
+            player.Step(world, PlayerInput.None, 0.016f);
+
+        world.Dispose();
+        Assert.True(player.IsGrounded, $"the player came down to {player.Position.Y:0.0} instead of the ground at {Ground}");
+    }
+
+    [Fact]
     public void TheTankEmptiesInTheAirAndRefillsOnTheGround()
     {
         (VoxelWorld world, PlayerController player) = Standing(jetpack: true);

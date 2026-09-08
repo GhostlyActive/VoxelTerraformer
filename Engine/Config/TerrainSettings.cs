@@ -18,6 +18,9 @@ public sealed class TerrainSettings
     /// <summary>Seconds of burn in a full tank</summary>
     public float JetpackFuelSeconds { get; set; } = 2.5f;
 
+    /// <summary>Metres per second in godmode's free flight; Shift multiplies it by the sprint factor</summary>
+    public float FlySpeed { get; set; } = 26f;
+
     /// <summary>Reach for removing and placing; with nothing in the way the block appears in mid-air at this distance</summary>
     public float BuildReach { get; set; } = 8f;
 
@@ -31,7 +34,7 @@ public sealed class TerrainSettings
     public float PreviewHold { get; set; } = 1.0f;
 
     /// <summary>Show the brush sphere at rest in Sculpt and Smooth mode, not only after a size change</summary>
-    public bool ShowBrushAlways { get; set; } = true;
+    public bool ShowBrushAlways { get; set; }
 
     /// <summary>Strength of the surface grid Sculpt mode draws near the camera; 0 hides it</summary>
     public float SculptGridStrength { get; set; } = 1f;

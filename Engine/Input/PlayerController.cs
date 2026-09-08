@@ -11,6 +11,9 @@ namespace VoxelEngine.Input;
 /// </summary>
 public readonly record struct PlayerInput(Vector2 Look, Vector2 Move, bool Sprint, bool JumpPressed, bool JumpHeld)
 {
+    /// <summary>Sink while flying in <see cref="PlayerController.Godmode"/>; ignored on foot</summary>
+    public bool Descend { get; init; }
+
     public static PlayerInput None => new(Vector2.Zero, Vector2.Zero, false, false, false);
 
     /// <summary>Mouse and keyboard: WASD walks, Shift sprints, Space jumps and, held in the air, fires the jetpack</summary>
@@ -27,7 +30,10 @@ public readonly record struct PlayerInput(Vector2 Look, Vector2 Move, bool Sprin
             move,
             Raylib.IsKeyDown(KeyboardKey.LeftShift),
             Raylib.IsKeyPressed(KeyboardKey.Space),
-            Raylib.IsKeyDown(KeyboardKey.Space));
+            Raylib.IsKeyDown(KeyboardKey.Space))
+        {
+            Descend = Raylib.IsKeyDown(KeyboardKey.LeftControl),
+        };
     }
 }
 
@@ -78,6 +84,12 @@ public class PlayerController
     /// <summary>Lets the jump key, held in the air, fire the jetpack; off, the player only jumps</summary>
     public bool JetpackEnabled { get; set; }
 
+    /// <summary>
+    /// Free flight: no gravity, no collision, Space and Ctrl for up and down. Made for filming,
+    /// so the motion is eased in and out instead of starting and stopping dead.
+    /// </summary>
+    public bool Godmode { get; set; }
+
     /// <summary>Fuel left in the tank, 0..1</summary>
     public float Fuel01 => _fuel;
 
@@ -109,6 +121,8 @@ public class PlayerController
     /// <summary>One step of the walking model on explicit input</summary>
     public Camera3D Step(VoxelWorld world, in PlayerInput input, float dt)
     {
+        if (Godmode) return StepFlight(input, dt);
+
         UpdateLook(input.Look);
 
         Vector2 wish = input.Move;
@@ -155,6 +169,43 @@ public class PlayerController
         // Build camera from player
         float targetFov = _engine.FieldOfView + (sprinting ? SprintFovBoost : 0f);
         if (_fov <= 0f) _fov = targetFov; // first frame: do not ramp up from nothing
+        _fov += (targetFov - _fov) * Math.Min(1f, 10f * dt);
+
+        return BuildCamera();
+    }
+
+    /// <summary>
+    /// One step of the free flight: along the line of sight rather than over the ground, so
+    /// looking down and pushing forward dives. The velocity eases towards what the keys ask for,
+    /// which is what keeps a filmed move from starting with a jolt.
+    /// </summary>
+    private Camera3D StepFlight(in PlayerInput input, float dt)
+    {
+        UpdateLook(input.Look);
+
+        Vector3 look = LookDirection();
+        Vector3 right = Vector3.Normalize(Vector3.Cross(look, Vector3.UnitY));
+
+        Vector3 wish = right * input.Move.X + look * input.Move.Y;
+        wish.Y += (input.JumpHeld ? 1f : 0f) - (input.Descend ? 1f : 0f);
+
+        if (wish.LengthSquared() > 0f) wish = Vector3.Normalize(wish);
+
+        bool sprinting = input.Sprint && wish.LengthSquared() > 0f;
+        float speed = _settings.FlySpeed * (sprinting ? _settings.SprintMultiplier : 1f);
+
+        // Frame-rate independent easing towards the wanted velocity
+        _velocity = Vector3.Lerp(_velocity, wish * speed, 1f - MathF.Exp(-8f * dt));
+        Position += _velocity * dt;
+
+        // Nothing to stand on and nothing to burn: the tank stays full for the walk afterwards
+        _grounded = false;
+        _timeSinceGrounded = 0f;
+        _fuel = 1f;
+        JetpackBurning = false;
+
+        float targetFov = _engine.FieldOfView + (sprinting ? SprintFovBoost : 0f);
+        if (_fov <= 0f) _fov = targetFov;
         _fov += (targetFov - _fov) * Math.Min(1f, 10f * dt);
 
         return BuildCamera();

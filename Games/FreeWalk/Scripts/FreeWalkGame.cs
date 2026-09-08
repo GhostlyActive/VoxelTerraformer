@@ -32,6 +32,8 @@ public sealed class FreeWalkGame : Game
         "LMB / RMB: remove and place (hold them in Sculpt and Smooth)",
         "Wheel: build reach | Ctrl+Wheel: brush size",
         "V: voxel mode | Z/U: move the sun | M: tuning | F3: debug",
+        "G: godmode — fly free, Ctrl sinks, nothing in the way",
+        "K: record to the desktop | ESC settings: video size, in-game text",
     };
 
     public override void Load()
@@ -45,6 +47,7 @@ public sealed class FreeWalkGame : Game
             RunDayNight = false,
             SunAngleDegrees = NoonAngle,
             Jetpack = true,
+            Godmode = true,
         });
 
         if (Context.Benchmark) _benchmark = new FreeWalkBenchmark(_scene, Context, new Vector3(128, 60, 128));
@@ -52,8 +55,15 @@ public sealed class FreeWalkGame : Game
 
     public override void Update(float dt)
     {
-        if (_benchmark != null) _benchmark.Update();
-        else if (Raylib.IsKeyPressed(KeyboardKey.V)) _scene.CycleMode();
+        if (_benchmark != null)
+        {
+            _benchmark.Update();
+        }
+        else
+        {
+            if (Raylib.IsKeyPressed(KeyboardKey.V)) _scene.CycleMode();
+            if (Raylib.IsKeyPressed(KeyboardKey.G)) ToggleGodmode();
+        }
 
         _scene.ShowDebugGeometry = Context.DebugOverlay && _benchmark == null;
         _scene.Update(dt);
@@ -65,10 +75,17 @@ public sealed class FreeWalkGame : Game
 
     public override void DrawWorld() => _scene.Draw();
 
+    /// <summary>Free flight for filming; the status line says which way it went</summary>
+    private void ToggleGodmode()
+    {
+        _scene.Godmode = !_scene.Godmode;
+        Context.ShowStatus(_scene.Godmode ? "Godmode on: fly with WASD, Space up, Ctrl down" : "Godmode off");
+    }
+
     public override void DrawHud()
     {
         Hud.Text("WASD move | Shift sprint | Space jump, hold for jetpack | LMB remove | RMB place | V mode", 10, 40, 20, Color.Black);
-        Hud.Text("Wheel: reach | Ctrl+Wheel: brush | Z/U sun | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
+        Hud.Text("Wheel: reach | Ctrl+Wheel: brush | Z/U sun | G godmode | K record | F3 debug | M tuning | ESC menu", 10, 65, 20, Color.Black);
         Hud.Text(_scene.DayNight.SunLabel, 10, 90, 20, Color.Black);
 
         if (Context.DebugOverlay)
@@ -105,6 +122,13 @@ public sealed class FreeWalkGame : Game
     /// <summary>The jetpack's tank, bottom left; it flashes when the jets are on</summary>
     private void DrawFuel()
     {
+        // Godmode flies on nothing, so the tank has nothing to say
+        if (_scene.Godmode)
+        {
+            Hud.Text("GODMODE", 16, Context.ScreenHeight - 60, 18, Hud.Accent);
+            return;
+        }
+
         float fuel = _scene.Player.Fuel01;
         bool burning = _scene.Player.JetpackBurning;
 

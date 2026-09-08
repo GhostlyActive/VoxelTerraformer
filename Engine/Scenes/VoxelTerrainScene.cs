@@ -61,6 +61,12 @@ public sealed record VoxelTerrainOptions
 
     /// <summary>Jump held in the air fires a jetpack; the tank refills on the ground</summary>
     public bool Jetpack { get; init; }
+
+    /// <summary>
+    /// The game offers godmode: free flight with no gravity and no collision, for filming. Adds
+    /// the fly speed to the tuning menu; switching it on is left to the game.
+    /// </summary>
+    public bool Godmode { get; init; }
 }
 
 /// <summary>
@@ -137,6 +143,13 @@ public sealed class VoxelTerrainScene : IDisposable
     /// <summary>Show chunk bounds and the world grid (F3)</summary>
     public bool ShowDebugGeometry { get; set; }
 
+    /// <summary>Free flight: no gravity, no collision, Space and Ctrl for up and down</summary>
+    public bool Godmode
+    {
+        get => Player.Godmode;
+        set => Player.Godmode = value;
+    }
+
     /// <summary>The wave of the last mode switch while it runs, or null</summary>
     public ModeTransition? Transition { get; private set; }
 
@@ -188,7 +201,7 @@ public sealed class VoxelTerrainScene : IDisposable
         // never moves the sun of another
         string settingsKey = $"{context.Id}/Terrain";
         _settings = options.Settings ?? context.Store.Load<TerrainSettings>(settingsKey);
-        RegisterTuning(() => context.Store.Save(settingsKey, _settings), options.Jetpack);
+        RegisterTuning(() => context.Store.Save(settingsKey, _settings), options.Jetpack, options.Godmode);
 
         Storage = options.Storage ?? context.OpenStorage(options.SaveSlot, options.WorldHeight);
         World = new VoxelWorld(Storage, options.Generator, Math.Min(_engine.ViewDistanceChunks, _maxViewDistance), options.WorldHeight) { BuildMaterial = options.BuildMaterial };
@@ -249,7 +262,7 @@ public sealed class VoxelTerrainScene : IDisposable
         _clouds = options.Clouds ? new CloudLayer() : null;
     }
 
-    private void RegisterTuning(Action save, bool jetpack)
+    private void RegisterTuning(Action save, bool jetpack, bool godmode)
     {
         if (_tuning == null) return;
 
@@ -265,6 +278,9 @@ public sealed class VoxelTerrainScene : IDisposable
         if (jetpack)
             move.Value("Jetpack thrust", () => s.JetpackThrust, v => s.JetpackThrust = v, defaults.JetpackThrust, 2f, 10f, 80f, "0")
                 .Value("Jetpack fuel s", () => s.JetpackFuelSeconds, v => s.JetpackFuelSeconds = v, defaults.JetpackFuelSeconds, 0.5f, 0.5f, 12f, "0.0");
+
+        if (godmode)
+            move.Value("Fly speed", () => s.FlySpeed, v => s.FlySpeed = v, defaults.FlySpeed, 2f, 4f, 200f, "0");
 
         _tuningSections.Add(move);
 
@@ -518,7 +534,10 @@ public sealed class VoxelTerrainScene : IDisposable
             Camera, Raylib.GetScreenWidth() / (float)Raylib.GetScreenHeight());
         Meshes.Draw(_shader.Shader, frustum, Camera.Position, fogEnd + Chunk.Size);
 
-        World.DrawHover();
+        // The block outline and the brush sphere are an aiming aid, not part of the world: they
+        // go with the rest of the readouts when the player asks for a clean view
+        if (_engine.ShowHud) World.DrawHover();
+
         Particles.Draw();
         DayNight.Draw3D(Camera);
 
