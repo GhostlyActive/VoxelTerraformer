@@ -8,7 +8,9 @@ The engine takes care of the world, terrain generation, chunk streaming, meshing
 
 The main idea behind the project is to have **one world, but different ways of working with it** — from simple blocks to smooth, fully editable terrain.
 
-![Rocket launch, impact crater, and the same crater in Blocks and Smooth mode](Screenshots/demo.gif)
+![Flight over smooth voxel terrain and through the solar system, past a ringed planet and the sun](Screenshots/demo.gif)
+
+[▶ Watch on YouTube](https://www.youtube.com/watch?v=vWNqucjytic)
 
 ## Games
 
